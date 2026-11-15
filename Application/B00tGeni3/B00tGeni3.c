@@ -12,6 +12,13 @@
     5. record the variant name in EFI\OC\B00tGeni3\active.txt
     6. cold reset
 
+  Before a swap the variant goes through a pre-flight check and is refused,
+  with every reason printed, unless: it parses with OcConfigurationLib,
+  ShowPicker is true, Vault is Optional, this tool is still an enabled Tools
+  entry, and every file referenced by an enabled Drivers, Kexts, ACPI or Tools
+  entry exists. A config failing these could stop OpenCore before the picker,
+  where this tool cannot be reached to switch back.
+
   Every write goes to a temporary name first and is read back before it is
   renamed into place, and there is always a complete config on disk
   (config.plist or config.old).
@@ -28,13 +35,17 @@
 #include <Library/DebugLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/OcConfigurationLib.h>
 #include <Library/OcCryptoLib.h>
+#include <Library/OcStringLib.h>
 #include <Library/UefiApplicationEntryPoint.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
-#define B00T_VERSION         L"0.4.1"
+#define B00T_VERSION         L"0.5"
+#define B00T_TOOL_NAME       "B00tGeni3.efi"
+#define B00T_MAX_PATH        256
 #define B00T_OC_DIR_PATH     L"EFI\\OC"
 #define B00T_DIR_PATH        L"EFI\\OC\\B00tGeni3"
 #define B00T_CONFIG_NAME     L"config.plist"
@@ -550,6 +561,168 @@ LoadVariants (
   return EFI_SUCCESS;
 }
 
+//
+// Parsed copy of the variant under pre-flight. Static: OC_GLOBAL_CONFIG is too large for the stack.
+//
+STATIC OC_GLOBAL_CONFIG  mPreflightConfig;
+
+STATIC
+VOID
+PreflightFile (
+  IN     EFI_FILE_PROTOCOL  *OcDir,
+  IN     CONST CHAR16       *Folder,
+  IN     CONST CHAR8        *Part1,
+  IN     CONST CHAR8        *Part2  OPTIONAL,
+  IN OUT UINTN              *Problems
+  )
+{
+  EFI_STATUS         Status;
+  EFI_FILE_PROTOCOL  *File;
+  CHAR16             Path[B00T_MAX_PATH];
+
+  if (Part2 != NULL) {
+    Status = OcUnicodeSafeSPrint (Path, sizeof (Path), L"%s\\%a\\%a", Folder, Part1, Part2);
+  } else {
+    Status = OcUnicodeSafeSPrint (Path, sizeof (Path), L"%s\\%a", Folder, Part1);
+  }
+
+  if (EFI_ERROR (Status)) {
+    Print (L"  - path too long: %s\\%a\n", Folder, Part1);
+    ++*Problems;
+    return;
+  }
+
+  UnicodeUefiSlashes (Path);
+  Status = OcDir->Open (OcDir, &File, Path, EFI_FILE_MODE_READ, 0);
+  if (EFI_ERROR (Status)) {
+    Print (L"  - missing file: EFI\\OC\\%s (%r)\n", Path, Status);
+    ++*Problems;
+    return;
+  }
+
+  File->Close (File);
+}
+
+/**
+  Check that a variant would still bring OpenCore to its picker with this tool in it.
+  Prints one line per problem. Changes nothing on disk.
+
+  @retval TRUE   No problems found, the variant may be activated.
+  @retval FALSE  At least one problem, the variant must be refused.
+**/
+STATIC
+BOOLEAN
+PreflightVariant (
+  IN EFI_FILE_PROTOCOL   *OcDir,
+  IN CONST B00T_VARIANT  *Variant
+  )
+{
+  EFI_STATUS           Status;
+  OC_GLOBAL_CONFIG     *Config;
+  UINT8                *Copy;
+  UINT32               ErrorCount;
+  UINTN                Problems;
+  UINT32               Index;
+  BOOLEAN              ToolListed;
+  OC_MISC_TOOLS_ENTRY  *Tool;
+  OC_UEFI_DRIVER_ENTRY *Driver;
+  OC_KERNEL_ADD_ENTRY  *Kext;
+  OC_ACPI_ADD_ENTRY    *Table;
+  CONST CHAR8          *Path;
+
+  //
+  // The plist parser works in place, so it gets a copy: the variant data is what gets written.
+  //
+  Copy = AllocateCopyPool (Variant->Size, Variant->Data);
+  if (Copy == NULL) {
+    Print (L"  - out of memory, cannot check\n");
+    return FALSE;
+  }
+
+  Config     = &mPreflightConfig;
+  ErrorCount = 0;
+  Status     = OcConfigurationInit (Config, Copy, (UINT32)Variant->Size, &ErrorCount);
+  if (EFI_ERROR (Status)) {
+    Print (L"  - not a valid plist: OpenCore's parser rejects it (%r)\n", Status);
+    FreePool (Copy);
+    return FALSE;
+  }
+
+  Problems = 0;
+  if (ErrorCount > 0) {
+    Print (L"  note: %u schema warning(s), OpenCore would log them and continue\n", ErrorCount);
+  }
+
+  if (!Config->Misc.Boot.ShowPicker) {
+    Print (L"  - Misc > Boot > ShowPicker is false: the picker would not appear\n");
+    ++Problems;
+  }
+
+  Path = OC_BLOB_GET (&Config->Misc.Security.Vault);
+  if (AsciiStrCmp (Path, "Optional") != 0) {
+    Print (L"  - Misc > Security > Vault is %a: needs Optional (vault support is not in this version)\n", Path);
+    ++Problems;
+  }
+
+  ToolListed = FALSE;
+  for (Index = 0; Index < Config->Misc.Tools.Count; ++Index) {
+    Tool = Config->Misc.Tools.Values[Index];
+    Path = OC_BLOB_GET (&Tool->Path);
+    if (!Tool->Enabled || (Path[0] == '\0')) {
+      continue;
+    }
+
+    if (AsciiStriCmp (Path, B00T_TOOL_NAME) == 0) {
+      ToolListed = TRUE;
+    }
+
+    PreflightFile (OcDir, L"Tools", Path, NULL, &Problems);
+  }
+
+  if (!ToolListed) {
+    Print (L"  - %a is not an enabled entry under Misc > Tools: no way back from this config\n", B00T_TOOL_NAME);
+    ++Problems;
+  }
+
+  for (Index = 0; Index < Config->Uefi.Drivers.Count; ++Index) {
+    Driver = Config->Uefi.Drivers.Values[Index];
+    Path   = OC_BLOB_GET (&Driver->Path);
+    if (Driver->Enabled && (Path[0] != '\0')) {
+      PreflightFile (OcDir, L"Drivers", Path, NULL, &Problems);
+    }
+  }
+
+  for (Index = 0; Index < Config->Kernel.Add.Count; ++Index) {
+    Kext = Config->Kernel.Add.Values[Index];
+    Path = OC_BLOB_GET (&Kext->BundlePath);
+    if (!Kext->Enabled || (Path[0] == '\0') || (OC_BLOB_GET (&Kext->PlistPath)[0] == '\0')) {
+      continue;
+    }
+
+    PreflightFile (OcDir, L"Kexts", Path, OC_BLOB_GET (&Kext->PlistPath), &Problems);
+    if (OC_BLOB_GET (&Kext->ExecutablePath)[0] != '\0') {
+      PreflightFile (OcDir, L"Kexts", Path, OC_BLOB_GET (&Kext->ExecutablePath), &Problems);
+    }
+  }
+
+  for (Index = 0; Index < Config->Acpi.Add.Count; ++Index) {
+    Table = Config->Acpi.Add.Values[Index];
+    Path  = OC_BLOB_GET (&Table->Path);
+    if (Table->Enabled && (Path[0] != '\0')) {
+      PreflightFile (OcDir, L"ACPI", Path, NULL, &Problems);
+    }
+  }
+
+  OcConfigurationFree (Config);
+  FreePool (Copy);
+
+  if (Problems == 0) {
+    Print (L"  OK\n");
+  }
+
+  return Problems == 0;
+}
+
 STATIC
 EFI_STATUS
 SwapConfig (
@@ -753,6 +926,15 @@ UefiMain (
     Choice = Key.UnicodeChar - L'1';
     if (Variants[Choice].Active) {
       Print (L"\n%s is already active.\n", Variants[Choice].Name);
+      continue;
+    }
+
+    Print (L"\nPre-flight check of %s:\n", Variants[Choice].Name);
+    if (!PreflightVariant (OcDir, &Variants[Choice])) {
+      Print (L"\nREFUSED: %s is not safe to activate. Nothing was changed.\n", Variants[Choice].Name);
+      Print (L"Press any key for the menu...\n");
+      WaitForKey ();
+      gST->ConOut->ClearScreen (gST->ConOut);
       continue;
     }
 
