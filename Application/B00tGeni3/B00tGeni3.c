@@ -34,7 +34,7 @@
 #include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
-#define B00T_VERSION         L"0.4"
+#define B00T_VERSION         L"0.4.1"
 #define B00T_OC_DIR_PATH     L"EFI\\OC"
 #define B00T_DIR_PATH        L"EFI\\OC\\B00tGeni3"
 #define B00T_CONFIG_NAME     L"config.plist"
@@ -321,7 +321,7 @@ ReadAndCompare (
 
 STATIC
 EFI_STATUS
-RenameFile (
+RenameNoProbe (
   IN EFI_FILE_PROTOCOL  *Dir,
   IN CONST CHAR16       *OldName,
   IN CONST CHAR16       *NewName
@@ -333,14 +333,6 @@ RenameFile (
   EFI_FILE_INFO      *NewInfo;
   UINTN              InfoSize;
   UINTN              NewInfoSize;
-
-  //
-  // Drop an existing target first; FAT will not rename over it.
-  //
-  Status = DeleteIfExists (Dir, NewName);
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
 
   Status = Dir->Open (Dir, &File, (CHAR16 *)OldName, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
   if (EFI_ERROR (Status)) {
@@ -388,6 +380,27 @@ RenameFile (
   FreePool (Info);
   File->Close (File);
   return Status;
+}
+
+STATIC
+EFI_STATUS
+RenameFile (
+  IN EFI_FILE_PROTOCOL  *Dir,
+  IN CONST CHAR16       *OldName,
+  IN CONST CHAR16       *NewName
+  )
+{
+  EFI_STATUS  Status;
+
+  //
+  // Drop an existing target first; FAT will not rename over it.
+  //
+  Status = DeleteIfExists (Dir, NewName);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  return RenameNoProbe (Dir, OldName, NewName);
 }
 
 /**
@@ -669,7 +682,18 @@ UefiMain (
   Status = gBS->HandleProtocol (ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID **)&LoadedImage);
   if (!EFI_ERROR (Status)) {
     PrintDevicePath (L"Running from", LoadedImage->FilePath);
-    Status = gBS->HandleProtocol (LoadedImage->DeviceHandle, &gEfiSimpleFileSystemProtocolGuid, (VOID **)&FileSystem);
+    //
+    // OpenProtocol, not HandleProtocol: OpenCore hooks HandleProtocol (OcVirtualFsLib) and
+    // returns a wrapped file system whose Delete only closes the file.
+    //
+    Status = gBS->OpenProtocol (
+                    LoadedImage->DeviceHandle,
+                    &gEfiSimpleFileSystemProtocolGuid,
+                    (VOID **)&FileSystem,
+                    ImageHandle,
+                    NULL,
+                    EFI_OPEN_PROTOCOL_GET_PROTOCOL
+                    );
   }
 
   if (!EFI_ERROR (Status)) {
