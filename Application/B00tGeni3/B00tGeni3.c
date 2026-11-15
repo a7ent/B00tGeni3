@@ -28,6 +28,7 @@
 
 #include <Uefi.h>
 #include <Guid/FileInfo.h>
+#include <Protocol/GraphicsOutput.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Library/BaseLib.h>
@@ -43,7 +44,7 @@
 #include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
-#define B00T_VERSION         L"0.5"
+#define B00T_VERSION         L"0.8a"
 #define B00T_TOOL_NAME       "B00tGeni3.efi"
 #define B00T_MAX_PATH        256
 #define B00T_OC_DIR_PATH     L"EFI\\OC"
@@ -785,6 +786,125 @@ SwapConfig (
   return Status;
 }
 
+//
+// Glyph and size test (menu key G). Phase 8a: shows which characters the active text renderer
+// can draw and how many columns and rows the console has. Changes nothing on disk.
+//
+typedef struct {
+  CHAR16          Char;
+  CONST CHAR16    *Name;
+} B00T_GLYPH;
+
+STATIC CONST B00T_GLYPH  mMockupGlyphs[] = {
+  { 0x2588, L"FULL BLOCK"           },
+  { 0x2593, L"DARK SHADE"           },
+  { 0x2592, L"MEDIUM SHADE"         },
+  { 0x2591, L"LIGHT SHADE"          },
+  { 0x2620, L"SKULL AND CROSSBONES" },
+  { 0x25B2, L"UP TRIANGLE"          },
+  { 0x25BC, L"DOWN TRIANGLE"        },
+  { 0x25BA, L"RIGHT POINTER"        },
+  { 0x25C4, L"LEFT POINTER"         },
+  { L'*',   L"ASTERISK"             },
+  { L'#',   L"NUMBER SIGN"          },
+  { L'=',   L"EQUALS"               },
+  { L'~',   L"TILDE"                },
+};
+
+STATIC CONST CHAR16  *mColorNames[] = {
+  L"BLACK",    L"BLUE",      L"GREEN",      L"CYAN",      L"RED",      L"MAGENTA",      L"BROWN",  L"LIGHTGRAY",
+  L"DARKGRAY", L"LIGHTBLUE", L"LIGHTGREEN", L"LIGHTCYAN", L"LIGHTRED", L"LIGHTMAGENTA", L"YELLOW", L"WHITE"
+};
+
+STATIC
+VOID
+GlyphRange (
+  IN CONST CHAR16  *Label,
+  IN CHAR16        First,
+  IN CHAR16        Last
+  )
+{
+  CHAR16  Line[32 * 2 + 1];
+  CHAR16  Char;
+  UINTN   Count;
+
+  Print (L"%s\n", Label);
+  Char = First;
+  while (Char <= Last) {
+    Print (L"  U+%04X  ", Char);
+    for (Count = 0; Count < 32 && Char <= Last; ++Count, ++Char) {
+      Line[Count * 2]     = Char;
+      Line[Count * 2 + 1] = L' ';
+    }
+
+    Line[Count * 2] = L'\0';
+    gST->ConOut->OutputString (gST->ConOut, Line);
+    Print (L"\n");
+  }
+}
+
+STATIC
+VOID
+GlyphTest (
+  VOID
+  )
+{
+  EFI_STATUS                    Status;
+  EFI_GRAPHICS_OUTPUT_PROTOCOL  *Gop;
+  UINTN                         Columns;
+  UINTN                         Rows;
+  UINTN                         Index;
+  CHAR16                        One[2];
+
+  gST->ConOut->ClearScreen (gST->ConOut);
+  Print (L"B00tGeni3 %s - glyph and size test\n", B00T_VERSION);
+
+  Status = gST->ConOut->QueryMode (gST->ConOut, (UINTN)gST->ConOut->Mode->Mode, &Columns, &Rows);
+  if (EFI_ERROR (Status)) {
+    Print (L"ConOut mode %d: size unknown - %r\n", gST->ConOut->Mode->Mode, Status);
+  } else {
+    Print (L"ConOut mode %d of %d: %u columns x %u rows\n", gST->ConOut->Mode->Mode, gST->ConOut->Mode->MaxMode, (UINT32)Columns, (UINT32)Rows);
+  }
+
+  Status = gBS->HandleProtocol (gST->ConsoleOutHandle, &gEfiGraphicsOutputProtocolGuid, (VOID **)&Gop);
+  if (EFI_ERROR (Status)) {
+    Status = gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID **)&Gop);
+  }
+
+  if (EFI_ERROR (Status)) {
+    Print (L"GOP: not available - %r\n", Status);
+  } else {
+    Print (L"GOP: %u x %u pixels\n", Gop->Mode->Info->HorizontalResolution, Gop->Mode->Info->VerticalResolution);
+  }
+
+  Print (L"\nGlyphs the mockup uses (the glyph is between the brackets):\n");
+  One[1] = L'\0';
+  for (Index = 0; Index < ARRAY_SIZE (mMockupGlyphs); ++Index) {
+    One[0] = mMockupGlyphs[Index].Char;
+    Print (L"  U+%04X [", mMockupGlyphs[Index].Char);
+    gST->ConOut->OutputString (gST->ConOut, One);
+    Print (L"] %s\n", mMockupGlyphs[Index].Name);
+  }
+
+  Print (L"\n");
+  GlyphRange (L"ASCII", 0x20, 0x7E);
+  GlyphRange (L"Latin-1", 0xA0, 0xFF);
+  GlyphRange (L"Arrows", 0x2190, 0x2199);
+  GlyphRange (L"Box drawing", 0x2500, 0x257F);
+  GlyphRange (L"Block elements", 0x2580, 0x259F);
+  GlyphRange (L"Geometric shapes", 0x25A0, 0x25CF);
+
+  Print (L"\nColors (EFI_TEXT_ATTR foreground 0-15 on black):\n  ");
+  for (Index = 0; Index < ARRAY_SIZE (mColorNames); ++Index) {
+    gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (Index, Index == EFI_BLACK ? EFI_LIGHTGRAY : EFI_BLACK));
+    Print (L"%s", mColorNames[Index]);
+    gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK));
+    Print (Index == 7 ? L"\n  " : L" ");
+  }
+
+  Print (L"\n\nPress any key for the menu...\n");
+}
+
 STATIC
 VOID
 ShowMenu (
@@ -917,6 +1037,13 @@ UefiMain (
     Key = WaitForKey ();
     if ((Key.ScanCode == SCAN_ESC) || (Key.UnicodeChar == L'q') || (Key.UnicodeChar == L'Q')) {
       break;
+    }
+
+    if ((Key.UnicodeChar == L'g') || (Key.UnicodeChar == L'G')) {
+      GlyphTest ();
+      WaitForKey ();
+      gST->ConOut->ClearScreen (gST->ConOut);
+      continue;
     }
 
     if ((Key.UnicodeChar < L'1') || (Key.UnicodeChar > L'0' + Count)) {
