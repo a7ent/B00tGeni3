@@ -20,6 +20,7 @@
 
 [Sources]
   B00tGeni3.c
+  B00tArt.h
 
 [Packages]
   MdePkg/MdePkg.dec

@@ -44,7 +44,9 @@
 #include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
-#define B00T_VERSION         L"0.8a"
+#include "B00tArt.h"
+
+#define B00T_VERSION         L"0.8b"
 #define B00T_TOOL_NAME       "B00tGeni3.efi"
 #define B00T_MAX_PATH        256
 #define B00T_OC_DIR_PATH     L"EFI\\OC"
@@ -905,6 +907,294 @@ GlyphTest (
   Print (L"\n\nPress any key for the menu...\n");
 }
 
+//
+// Mockup screen. Text goes through ConOut; the logos and the banner are bitmaps
+// drawn with GOP Blt at the pixel positions of the builtin renderer's cells.
+//
+typedef struct {
+  EFI_GRAPHICS_OUTPUT_PROTOCOL    *Gop;
+  UINTN                           Scale;
+  UINTN                           CellWidth;
+  UINTN                           CellHeight;
+  UINTN                           PadX;
+  UINTN                           PadY;
+  UINTN                           Col0;
+  UINTN                           Row0;
+  BOOLEAN                         Compact;
+} B00T_UI;
+
+STATIC B00T_UI  mUi;
+
+STATIC CONST UINT8  mShadeLevels[] = { 0, 74, 145, 194, 255 };
+
+/**
+  Work out whether the mockup screen fits this console and where its cells are in pixels.
+  The geometry is the one of OpenCore's builtin renderer (8x16 cells times the UI scale,
+  centred); any other console gets the plain menu.
+**/
+STATIC
+BOOLEAN
+UiInit (
+  VOID
+  )
+{
+  EFI_STATUS  Status;
+  UINTN       Columns;
+  UINTN       Rows;
+  UINTN       Width;
+  UINTN       Height;
+
+  Status = gST->ConOut->QueryMode (gST->ConOut, (UINTN)gST->ConOut->Mode->Mode, &Columns, &Rows);
+  if (EFI_ERROR (Status) || (Columns == 0) || (Rows == 0)) {
+    return FALSE;
+  }
+
+  Status = gBS->HandleProtocol (gST->ConsoleOutHandle, &gEfiGraphicsOutputProtocolGuid, (VOID **)&mUi.Gop);
+  if (EFI_ERROR (Status)) {
+    Status = gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID **)&mUi.Gop);
+  }
+
+  if (EFI_ERROR (Status)) {
+    return FALSE;
+  }
+
+  Width          = mUi.Gop->Mode->Info->HorizontalResolution;
+  Height         = mUi.Gop->Mode->Info->VerticalResolution;
+  mUi.Scale      = (Width / Columns) >= 16 ? 2 : 1;
+  mUi.CellWidth  = 8 * mUi.Scale;
+  mUi.CellHeight = 16 * mUi.Scale;
+  if (  (Columns * mUi.CellWidth > Width)
+     || (Rows * mUi.CellHeight > Height)
+     || (Width - Columns * mUi.CellWidth >= mUi.CellWidth)
+     || (Height - Rows * mUi.CellHeight >= mUi.CellHeight))
+  {
+    return FALSE;
+  }
+
+  if ((Columns < B00T_UI_COLS) || (Rows < B00T_UI_COMPACT_ROWS)) {
+    return FALSE;
+  }
+
+  mUi.Compact = Rows < B00T_UI_ROWS;
+  mUi.PadX    = (Width - Columns * mUi.CellWidth) / 2;
+  mUi.PadY    = (Height - Rows * mUi.CellHeight) / 2;
+  mUi.Col0    = (Columns - B00T_UI_COLS) / 2;
+  mUi.Row0    = (Rows - (mUi.Compact ? B00T_UI_COMPACT_ROWS : B00T_UI_ROWS)) / 2;
+  return TRUE;
+}
+
+/**
+  Black out the whole display. ClearScreen alone only clears the area text has reached,
+  which leaves bitmaps drawn outside it.
+**/
+STATIC
+VOID
+UiBlackout (
+  VOID
+  )
+{
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  Black;
+
+  ZeroMem (&Black, sizeof (Black));
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK));
+  gST->ConOut->ClearScreen (gST->ConOut);
+  mUi.Gop->Blt (
+             mUi.Gop,
+             &Black,
+             EfiBltVideoFill,
+             0,
+             0,
+             0,
+             0,
+             mUi.Gop->Mode->Info->HorizontalResolution,
+             mUi.Gop->Mode->Info->VerticalResolution,
+             0
+             );
+}
+
+/**
+  Draw a logo given as one shade level per cell. Cells are full character cells, or
+  half size in the compact layout; the logo is centred in ColSpan x RowSpan cells.
+**/
+STATIC
+VOID
+UiDrawCells (
+  IN CONST UINT8  *Cells,
+  IN UINTN        Cols,
+  IN UINTN        Rows,
+  IN UINTN        Col,
+  IN UINTN        Row,
+  IN UINTN        RowSpan,
+  IN UINT8        Red,
+  IN UINT8        Green,
+  IN UINT8        Blue
+  )
+{
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Buffer;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Pixel;
+  UINTN                          BlockWidth;
+  UINTN                          BlockHeight;
+  UINTN                          Width;
+  UINTN                          Height;
+  UINTN                          X;
+  UINTN                          Y;
+  UINT8                          Shade;
+
+  BlockWidth  = mUi.Compact ? mUi.CellWidth / 2 : mUi.CellWidth;
+  BlockHeight = mUi.Compact ? mUi.CellHeight / 2 : mUi.CellHeight;
+  Width       = Cols * BlockWidth;
+  Height      = Rows * BlockHeight;
+  Buffer      = AllocatePool (Width * Height * sizeof (*Buffer));
+  if (Buffer == NULL) {
+    return;
+  }
+
+  Pixel = Buffer;
+  for (Y = 0; Y < Height; ++Y) {
+    for (X = 0; X < Width; ++X) {
+      Shade           = mShadeLevels[Cells[(Y / BlockHeight) * Cols + X / BlockWidth]];
+      Pixel->Red      = (UINT8)((UINTN)Red * Shade / 255);
+      Pixel->Green    = (UINT8)((UINTN)Green * Shade / 255);
+      Pixel->Blue     = (UINT8)((UINTN)Blue * Shade / 255);
+      Pixel->Reserved = 0;
+      ++Pixel;
+    }
+  }
+
+  mUi.Gop->Blt (
+             mUi.Gop,
+             Buffer,
+             EfiBltBufferToVideo,
+             0,
+             0,
+             mUi.PadX + (mUi.Col0 + Col) * mUi.CellWidth + (Cols * mUi.CellWidth - Width) / 2,
+             mUi.PadY + (mUi.Row0 + Row) * mUi.CellHeight + (RowSpan * mUi.CellHeight - Height) / 2,
+             Width,
+             Height,
+             0
+             );
+  FreePool (Buffer);
+}
+
+/**
+  Draw a 1 bit per pixel bitmap (most significant bit first, rows padded to a byte)
+  in white with its top left corner on a cell.
+**/
+STATIC
+VOID
+UiDrawBits (
+  IN CONST UINT8  *Bits,
+  IN UINTN        BitsWidth,
+  IN UINTN        BitsHeight,
+  IN UINTN        Col,
+  IN UINTN        Row
+  )
+{
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Buffer;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Pixel;
+  UINTN                          Stride;
+  UINTN                          Width;
+  UINTN                          Height;
+  UINTN                          X;
+  UINTN                          Y;
+  UINTN                          SourceX;
+  UINT8                          Value;
+
+  Stride = (BitsWidth + 7) / 8;
+  Width  = BitsWidth * mUi.Scale;
+  Height = BitsHeight * mUi.Scale;
+  Buffer = AllocatePool (Width * Height * sizeof (*Buffer));
+  if (Buffer == NULL) {
+    return;
+  }
+
+  Pixel = Buffer;
+  for (Y = 0; Y < Height; ++Y) {
+    for (X = 0; X < Width; ++X) {
+      SourceX         = X / mUi.Scale;
+      Value           = (Bits[(Y / mUi.Scale) * Stride + SourceX / 8] & (0x80 >> (SourceX % 8))) != 0 ? 0xFF : 0;
+      Pixel->Red      = Value;
+      Pixel->Green    = Value;
+      Pixel->Blue     = Value;
+      Pixel->Reserved = 0;
+      ++Pixel;
+    }
+  }
+
+  mUi.Gop->Blt (
+             mUi.Gop,
+             Buffer,
+             EfiBltBufferToVideo,
+             0,
+             0,
+             mUi.PadX + (mUi.Col0 + Col) * mUi.CellWidth,
+             mUi.PadY + (mUi.Row0 + Row) * mUi.CellHeight,
+             Width,
+             Height,
+             0
+             );
+  FreePool (Buffer);
+}
+
+/**
+  Draw the mockup screen: the logos, every text item, the boot-arg field, then the small art.
+  The compact layout halves both logos and drops the rows that frees up.
+**/
+STATIC
+VOID
+UiDrawMain (
+  VOID
+  )
+{
+  UINTN   Index;
+  UINTN   Row;
+  UINTN   Shift;
+  CHAR16  Field[B00T_UI_FIELD_WIDTH + 1];
+
+  UiBlackout ();
+  gST->ConOut->EnableCursor (gST->ConOut, FALSE);
+
+  //
+  // Logos first: the star and the tagline are text printed over cells inside the logo.
+  //
+  if (mUi.Compact) {
+    UiDrawCells (&mArtOtr[0][0], B00T_ART_OTR_COLS, B00T_ART_OTR_ROWS, B00T_ART_OTR_COL, 5, 6, 0xFF, 0xFF, 0xFF);
+    UiDrawCells (&mArtBig[0][0], B00T_ART_BIG_COLS, B00T_ART_BIG_ROWS, B00T_ART_BIG_COL, 12, 4, 0x00, 0xFF, 0x00);
+  } else {
+    UiDrawCells (&mArtOtr[0][0], B00T_ART_OTR_COLS, B00T_ART_OTR_ROWS, B00T_ART_OTR_COL, B00T_ART_OTR_ROW, B00T_ART_OTR_ROWS, 0xFF, 0xFF, 0xFF);
+    UiDrawCells (&mArtBig[0][0], B00T_ART_BIG_COLS, B00T_ART_BIG_ROWS, B00T_ART_BIG_COL, B00T_ART_BIG_ROW, B00T_ART_BIG_ROWS, 0x00, 0xFF, 0x00);
+  }
+
+  for (Index = 0; Index < ARRAY_SIZE (mUiItems); ++Index) {
+    Row = mUi.Compact ? mUiItems[Index].CompactRow : mUiItems[Index].Row;
+    if (Row == B00T_UI_HIDDEN) {
+      continue;
+    }
+
+    gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (mUiItems[Index].Color, EFI_BLACK));
+    gST->ConOut->SetCursorPosition (gST->ConOut, mUi.Col0 + mUiItems[Index].Col, mUi.Row0 + Row);
+    gST->ConOut->OutputString (gST->ConOut, (CHAR16 *)mUiItems[Index].Text);
+  }
+
+  //
+  // Rows below the logos move up by this much in the compact layout.
+  //
+  Shift = mUi.Compact ? B00T_UI_ROWS - B00T_UI_COMPACT_ROWS - 1 : 0;
+
+  for (Index = 0; Index < B00T_UI_FIELD_WIDTH; ++Index) {
+    Field[Index] = L' ';
+  }
+
+  Field[Index] = L'\0';
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_BLACK, EFI_LIGHTGRAY));
+  gST->ConOut->SetCursorPosition (gST->ConOut, mUi.Col0 + B00T_UI_FIELD_COL, mUi.Row0 + B00T_UI_FIELD_ROW - Shift);
+  gST->ConOut->OutputString (gST->ConOut, Field);
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK));
+
+  UiDrawBits (mArtSkull, 8, 16, B00T_ART_SKULL_COL, B00T_ART_SKULL_ROW - Shift);
+  UiDrawBits (mArtBanner, B00T_ART_BANNER_WIDTH, B00T_ART_BANNER_HEIGHT, B00T_ART_BANNER_COL, B00T_ART_BANNER_ROW - Shift);
+}
+
 STATIC
 VOID
 ShowMenu (
@@ -1030,6 +1320,17 @@ UefiMain (
     Print (L"No variants found in %s - %r\n", B00T_DIR_PATH, Status);
     FreePool (ConfigData);
     goto Done;
+  }
+
+  //
+  // Phase 8b: the mockup screen is drawn but not wired up yet; any key goes on to the plain menu.
+  //
+  if (UiInit ()) {
+    UiDrawMain ();
+    WaitForKey ();
+    UiBlackout ();
+    gST->ConOut->EnableCursor (gST->ConOut, TRUE);
+    Print (L"B00tGeni3 %s - config picker\n", B00T_VERSION);
   }
 
   while (TRUE) {
