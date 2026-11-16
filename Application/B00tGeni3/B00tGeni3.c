@@ -27,18 +27,23 @@
 **/
 
 #include <Uefi.h>
+#include <Guid/AppleVariable.h>
 #include <Guid/FileInfo.h>
+#include <Protocol/BlockIo.h>
 #include <Protocol/GraphicsOutput.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
+#include <Protocol/SimpleNetwork.h>
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/OcAcpiLib.h>
 #include <Library/OcConfigurationLib.h>
 #include <Library/OcCryptoLib.h>
 #include <Library/OcStringLib.h>
+#include <Library/PrintLib.h>
 #include <Library/UefiApplicationEntryPoint.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
@@ -46,9 +51,11 @@
 
 #include "B00tArt.h"
 
-#define B00T_VERSION         L"0.8b"
+#define B00T_VERSION         L"0.8c"
 #define B00T_TOOL_NAME       "B00tGeni3.efi"
 #define B00T_MAX_PATH        256
+#define B00T_MAX_ARGS        256
+#define B00T_APPLE_BOOT_GUID  "7C436110-AB2A-4BBB-A880-FE41995C9F82"
 #define B00T_OC_DIR_PATH     L"EFI\\OC"
 #define B00T_DIR_PATH        L"EFI\\OC\\B00tGeni3"
 #define B00T_CONFIG_NAME     L"config.plist"
@@ -913,6 +920,10 @@ GlyphTest (
 //
 typedef struct {
   EFI_GRAPHICS_OUTPUT_PROTOCOL    *Gop;
+  UINTN                           Columns;
+  UINTN                           Rows;
+  UINTN                           Shift;
+  UINTN                           StatusRow;
   UINTN                           Scale;
   UINTN                           CellWidth;
   UINTN                           CellHeight;
@@ -975,7 +986,11 @@ UiInit (
     return FALSE;
   }
 
-  mUi.Compact = Rows < B00T_UI_ROWS;
+  mUi.Compact   = Rows < B00T_UI_ROWS;
+  mUi.Columns   = Columns;
+  mUi.Rows      = Rows;
+  mUi.Shift     = mUi.Compact ? B00T_UI_ROWS - B00T_UI_COMPACT_ROWS : 0;
+  mUi.StatusRow = (mUi.Compact ? B00T_UI_COMPACT_ROWS : B00T_UI_ROWS) - 1;
   mUi.PadX    = (Width - Columns * mUi.CellWidth) / 2;
   mUi.PadY    = (Height - Rows * mUi.CellHeight) / 2;
   mUi.Col0    = (Columns - B00T_UI_COLS) / 2;
@@ -1179,7 +1194,7 @@ UiDrawMain (
   //
   // Rows below the logos move up by this much in the compact layout.
   //
-  Shift = mUi.Compact ? B00T_UI_ROWS - B00T_UI_COMPACT_ROWS - 1 : 0;
+  Shift = mUi.Shift;
 
   for (Index = 0; Index < B00T_UI_FIELD_WIDTH; ++Index) {
     Field[Index] = L' ';
@@ -1193,6 +1208,912 @@ UiDrawMain (
 
   UiDrawBits (mArtSkull, 8, 16, B00T_ART_SKULL_COL, B00T_ART_SKULL_ROW - Shift);
   UiDrawBits (mArtBanner, B00T_ART_BANNER_WIDTH, B00T_ART_BANNER_HEIGHT, B00T_ART_BANNER_COL, B00T_ART_BANNER_ROW - Shift);
+}
+
+//
+// Phase 8c: the mockup screen wired up. Arrow keys move between the selectable
+// items, Enter runs the selected one, Esc leaves. Sub-screens are plain text pages.
+//
+typedef enum {
+  B00tUiStay,
+  B00tUiExit,
+  B00tUiReset
+} B00T_UI_RESULT;
+
+typedef struct {
+  EFI_HANDLE                   ImageHandle;
+  EFI_LOADED_IMAGE_PROTOCOL    *LoadedImage;
+  EFI_FILE_PROTOCOL            *OcDir;
+  EFI_FILE_PROTOCOL            *B00tDir;
+  UINT8                        *ConfigData;
+  UINTN                        ConfigSize;
+  B00T_VARIANT                 *Variants;
+  UINTN                        Count;
+  CHAR16                       Serial[32];
+  CHAR16                       ConfigBootArgs[B00T_MAX_ARGS];
+} B00T_CONTEXT;
+
+STATIC CONST CHAR16  *mNoYes[] = { L"NO  - go back", L"YES - do it" };
+
+/**
+  Copy at most DestinationSize - 1 characters of an ASCII string of at most SourceSize
+  bytes into a UCS-2 buffer. Never asserts on long input.
+**/
+STATIC
+VOID
+AsciiToUnicodeN (
+  IN  CONST CHAR8  *Source,
+  IN  UINTN        SourceSize,
+  OUT CHAR16       *Destination,
+  IN  UINTN        DestinationSize
+  )
+{
+  UINTN  Index;
+
+  for (Index = 0; (Index < SourceSize) && (Index + 1 < DestinationSize) && (Source[Index] != '\0'); ++Index) {
+    Destination[Index] = (CHAR16)(UINT8)Source[Index];
+  }
+
+  Destination[Index] = L'\0';
+}
+
+/**
+  Print Text at a layout position, cut or padded with spaces to exactly Width cells.
+**/
+STATIC
+VOID
+UiPutText (
+  IN UINTN         Row,
+  IN UINTN         Col,
+  IN UINTN         Width,
+  IN UINTN         Attribute,
+  IN CONST CHAR16  *Text
+  )
+{
+  CHAR16  Buffer[B00T_UI_COLS + 1];
+  UINTN   Index;
+
+  Width = MIN (Width, B00T_UI_COLS);
+  for (Index = 0; (Index < Width) && (Text[Index] != L'\0'); ++Index) {
+    Buffer[Index] = Text[Index];
+  }
+
+  for ( ; Index < Width; ++Index) {
+    Buffer[Index] = L' ';
+  }
+
+  Buffer[Width] = L'\0';
+  gST->ConOut->SetAttribute (gST->ConOut, Attribute);
+  gST->ConOut->SetCursorPosition (gST->ConOut, mUi.Col0 + Col, mUi.Row0 + Row);
+  gST->ConOut->OutputString (gST->ConOut, Buffer);
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK));
+}
+
+STATIC
+VOID
+UiStatus (
+  IN UINTN         Attribute,
+  IN CONST CHAR16  *Text
+  )
+{
+  UiPutText (mUi.StatusRow, B00T_ART_BANNER_COL, B00T_UI_COLS - 2 * B00T_ART_BANNER_COL, Attribute, Text);
+}
+
+STATIC
+VOID
+UiDrawSel (
+  IN UINTN    Index,
+  IN BOOLEAN  Selected
+  )
+{
+  UiPutText (
+    mUiSel[Index].Row - mUi.Shift,
+    mUiSel[Index].Col,
+    StrLen (mUiSel[Index].Text),
+    EFI_TEXT_ATTR (Selected ? EFI_YELLOW : EFI_LIGHTGRAY, EFI_BLACK),
+    mUiSel[Index].Text
+    );
+}
+
+/**
+  Find the item an arrow key leads to: the nearest row in that direction, then the
+  nearest centre; left and right stay on the row. Returns Current if there is none.
+**/
+STATIC
+UINTN
+UiNeighbour (
+  IN UINTN   Current,
+  IN UINT16  ScanCode
+  )
+{
+  UINTN  Index;
+  UINTN  Best;
+  UINTN  BestScore;
+  UINTN  Score;
+  UINTN  Row;
+  UINTN  Middle;
+  UINTN  CurrentRow;
+  UINTN  CurrentMiddle;
+
+  Best          = Current;
+  BestScore     = MAX_UINTN;
+  CurrentRow    = mUiSel[Current].Row;
+  CurrentMiddle = mUiSel[Current].Col * 2 + StrLen (mUiSel[Current].Text);
+
+  for (Index = 0; Index < B00T_SEL_COUNT; ++Index) {
+    Row    = mUiSel[Index].Row;
+    Middle = mUiSel[Index].Col * 2 + StrLen (mUiSel[Index].Text);
+    if (  (Index == Current)
+       || ((ScanCode == SCAN_UP) && (Row >= CurrentRow))
+       || ((ScanCode == SCAN_DOWN) && (Row <= CurrentRow))
+       || ((ScanCode == SCAN_LEFT) && ((Row != CurrentRow) || (Middle >= CurrentMiddle)))
+       || ((ScanCode == SCAN_RIGHT) && ((Row != CurrentRow) || (Middle <= CurrentMiddle))))
+    {
+      continue;
+    }
+
+    Score = (Row > CurrentRow ? Row - CurrentRow : CurrentRow - Row) * 1000
+            + (Middle > CurrentMiddle ? Middle - CurrentMiddle : CurrentMiddle - Middle);
+    if (Score < BestScore) {
+      BestScore = Score;
+      Best      = Index;
+    }
+  }
+
+  return Best;
+}
+
+STATIC
+VOID
+UiPageBegin (
+  IN CONST CHAR16  *Title
+  )
+{
+  UiBlackout ();
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTGREEN, EFI_BLACK));
+  Print (L"B00tGeni3 - %s\n\n", Title);
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK));
+}
+
+STATIC
+VOID
+UiPageEnd (
+  VOID
+  )
+{
+  Print (L"\nPress any key to go back...\n");
+  WaitForKey ();
+}
+
+/**
+  Start a fresh page when the current one is nearly full.
+**/
+STATIC
+VOID
+UiPageMore (
+  IN CONST CHAR16  *Title
+  )
+{
+  if ((UINTN)gST->ConOut->Mode->CursorRow + 6 >= mUi.Rows) {
+    Print (L"\n-- more: press any key --");
+    WaitForKey ();
+    UiPageBegin (Title);
+  }
+}
+
+STATIC
+VOID
+UiPrintWarning (
+  IN CONST CHAR16  *Text
+  )
+{
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTRED, EFI_BLACK));
+  //
+  // Text is the format itself: Print only turns \n into \r\n in the format, not in a %s argument.
+  // Callers pass literals without % signs.
+  //
+  Print (Text);
+  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK));
+}
+
+/**
+  Let the user pick one of Options, listed from the current cursor row down.
+
+  @return  Index of the chosen option, or -1 on Esc.
+**/
+STATIC
+INTN
+UiChoose (
+  IN CONST CHAR16  **Options,
+  IN UINTN         Count,
+  IN UINTN         Selected
+  )
+{
+  EFI_INPUT_KEY  Key;
+  UINTN          Top;
+  UINTN          Index;
+
+  Print (L"Up/Down to move, Enter to choose, Esc to cancel.\n\n");
+  Top = (UINTN)gST->ConOut->Mode->CursorRow;
+  while (TRUE) {
+    for (Index = 0; Index < Count; ++Index) {
+      gST->ConOut->SetCursorPosition (gST->ConOut, 0, Top + Index);
+      gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (Index == Selected ? EFI_YELLOW : EFI_LIGHTGRAY, EFI_BLACK));
+      Print (L"  %s %s\n", Index == Selected ? L">" : L" ", Options[Index]);
+    }
+
+    gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK));
+    Key = WaitForKey ();
+    if ((Key.ScanCode == SCAN_UP) && (Selected > 0)) {
+      --Selected;
+    } else if ((Key.ScanCode == SCAN_DOWN) && (Selected + 1 < Count)) {
+      ++Selected;
+    } else if (Key.UnicodeChar == CHAR_CARRIAGE_RETURN) {
+      return (INTN)Selected;
+    } else if (Key.ScanCode == SCAN_ESC) {
+      return -1;
+    }
+  }
+}
+
+/**
+  Read the serial number and the boot-args string out of the active config.plist.
+**/
+STATIC
+VOID
+LoadConfigInfo (
+  IN OUT B00T_CONTEXT  *Context
+  )
+{
+  EFI_STATUS        Status;
+  OC_GLOBAL_CONFIG  *Config;
+  UINT8             *Copy;
+  UINT32            ErrorCount;
+  UINT32            Index;
+  UINT32            Index2;
+  OC_ASSOC          *Map;
+
+  Context->Serial[0]         = L'\0';
+  Context->ConfigBootArgs[0] = L'\0';
+
+  Copy = AllocateCopyPool (Context->ConfigSize, Context->ConfigData);
+  if (Copy == NULL) {
+    return;
+  }
+
+  Config     = &mPreflightConfig;
+  ErrorCount = 0;
+  Status     = OcConfigurationInit (Config, Copy, (UINT32)Context->ConfigSize, &ErrorCount);
+  if (EFI_ERROR (Status)) {
+    FreePool (Copy);
+    return;
+  }
+
+  AsciiToUnicodeN (
+    OC_BLOB_GET (&Config->PlatformInfo.Generic.SystemSerialNumber),
+    Config->PlatformInfo.Generic.SystemSerialNumber.Size,
+    Context->Serial,
+    ARRAY_SIZE (Context->Serial)
+    );
+
+  for (Index = 0; Index < Config->Nvram.Add.Count; ++Index) {
+    if (AsciiStriCmp (OC_BLOB_GET (Config->Nvram.Add.Keys[Index]), B00T_APPLE_BOOT_GUID) != 0) {
+      continue;
+    }
+
+    Map = Config->Nvram.Add.Values[Index];
+    for (Index2 = 0; Index2 < Map->Count; ++Index2) {
+      if (AsciiStrCmp (OC_BLOB_GET (Map->Keys[Index2]), "boot-args") == 0) {
+        AsciiToUnicodeN (
+          (CONST CHAR8 *)OC_BLOB_GET (Map->Values[Index2]),
+          Map->Values[Index2]->Size,
+          Context->ConfigBootArgs,
+          ARRAY_SIZE (Context->ConfigBootArgs)
+          );
+      }
+    }
+  }
+
+  OcConfigurationFree (Config);
+  FreePool (Copy);
+}
+
+/**
+  Short name for the partition a handle sits on, such as "SATA p1 GPT".
+**/
+STATIC
+VOID
+BootDeviceText (
+  IN  EFI_HANDLE  Handle,
+  OUT CHAR16      *Text,
+  IN  UINTN       TextSize
+  )
+{
+  EFI_DEVICE_PATH_PROTOCOL  *Node;
+  HARDDRIVE_DEVICE_PATH     *HardDrive;
+  CONST CHAR16              *Bus;
+
+  Bus       = L"disk";
+  HardDrive = NULL;
+  for (Node = DevicePathFromHandle (Handle); (Node != NULL) && !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
+    if (DevicePathType (Node) == MESSAGING_DEVICE_PATH) {
+      switch (DevicePathSubType (Node)) {
+        case MSG_SATA_DP:
+          Bus = L"SATA";
+          break;
+        case MSG_NVME_NAMESPACE_DP:
+          Bus = L"NVMe";
+          break;
+        case MSG_USB_DP:
+          Bus = L"USB";
+          break;
+        case MSG_ATAPI_DP:
+          Bus = L"ATA";
+          break;
+        case MSG_SCSI_DP:
+          Bus = L"SCSI";
+          break;
+        case MSG_SD_DP:
+          Bus = L"SD";
+          break;
+        case MSG_EMMC_DP:
+          Bus = L"eMMC";
+          break;
+        default:
+          break;
+      }
+    } else if ((DevicePathType (Node) == MEDIA_DEVICE_PATH) && (DevicePathSubType (Node) == MEDIA_HARDDRIVE_DP)) {
+      HardDrive = (HARDDRIVE_DEVICE_PATH *)Node;
+    }
+  }
+
+  if (HardDrive != NULL) {
+    UnicodeSPrint (
+      Text,
+      TextSize,
+      L"%s p%u %s",
+      Bus,
+      ReadUnaligned32 (&HardDrive->PartitionNumber),
+      HardDrive->SignatureType == SIGNATURE_TYPE_GUID ? L"GPT" : L"MBR"
+      );
+  } else {
+    UnicodeSPrint (Text, TextSize, L"%s", Bus);
+  }
+}
+
+/**
+  Fill in the system info row and the boot-arg field. Called on every redraw, so a
+  SIP toggle shows up when its page closes.
+**/
+STATIC
+VOID
+UiDrawInfo (
+  IN CONST B00T_CONTEXT  *Context
+  )
+{
+  EFI_STATUS                   Status;
+  EFI_HANDLE                   *Handles;
+  UINTN                        HandleCount;
+  EFI_SIMPLE_NETWORK_PROTOCOL  *Network;
+  CHAR16                       Text[B00T_MAX_ARGS];
+  CHAR8                        Args[B00T_MAX_ARGS];
+  UINTN                        Size;
+  UINT32                       Csr;
+  UINTN                        Value;
+
+  Value = EFI_TEXT_ATTR (EFI_LIGHTGREEN, EFI_BLACK);
+
+  BootDeviceText (Context->LoadedImage->DeviceHandle, Text, sizeof (Text));
+  UiPutText (0, 47, 16, Value, Text);
+
+  StrCpyS (Text, ARRAY_SIZE (Text), L"n/a");
+  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiSimpleNetworkProtocolGuid, NULL, &HandleCount, &Handles);
+  if (!EFI_ERROR (Status)) {
+    if (  (HandleCount > 0)
+       && !EFI_ERROR (gBS->HandleProtocol (Handles[0], &gEfiSimpleNetworkProtocolGuid, (VOID **)&Network))
+       && (Network->Mode != NULL))
+    {
+      UnicodeSPrint (
+        Text,
+        sizeof (Text),
+        L"%02X%02X%02X%02X%02X%02X",
+        Network->Mode->CurrentAddress.Addr[0],
+        Network->Mode->CurrentAddress.Addr[1],
+        Network->Mode->CurrentAddress.Addr[2],
+        Network->Mode->CurrentAddress.Addr[3],
+        Network->Mode->CurrentAddress.Addr[4],
+        Network->Mode->CurrentAddress.Addr[5]
+        );
+    }
+
+    FreePool (Handles);
+  }
+
+  UiPutText (0, 69, 15, Value, Text);
+  UiPutText (0, 93, 29, Value, Context->Serial[0] != L'\0' ? Context->Serial : L"n/a");
+
+  Size   = sizeof (Csr);
+  Status = gRT->GetVariable (L"csr-active-config", &gAppleBootVariableGuid, NULL, &Size, &Csr);
+  if (!EFI_ERROR (Status) && (Size == sizeof (Csr))) {
+    UnicodeSPrint (Text, sizeof (Text), L"0x%08X", Csr);
+  } else {
+    StrCpyS (Text, ARRAY_SIZE (Text), L"not set");
+  }
+
+  UiPutText (1, 47, 10, Value, Text);
+
+  Size   = sizeof (Args) - 1;
+  Status = gRT->GetVariable (L"boot-args", &gAppleBootVariableGuid, NULL, &Size, Args);
+  if (!EFI_ERROR (Status)) {
+    AsciiToUnicodeN (Args, Size, Text, ARRAY_SIZE (Text));
+  } else {
+    StrCpyS (Text, ARRAY_SIZE (Text), L"not set");
+  }
+
+  UiPutText (1, 69, 53, Value, Text);
+
+  UiPutText (
+    B00T_UI_FIELD_ROW - mUi.Shift,
+    B00T_UI_FIELD_COL,
+    B00T_UI_FIELD_WIDTH,
+    EFI_TEXT_ATTR (EFI_BLACK, EFI_LIGHTGRAY),
+    Context->ConfigBootArgs
+    );
+}
+
+/**
+  Pre-flight a variant, ask, and swap it in through the Phase 4 path.
+**/
+STATIC
+B00T_UI_RESULT
+UiActivate (
+  IN B00T_CONTEXT        *Context,
+  IN CONST B00T_VARIANT  *Variant  OPTIONAL
+  )
+{
+  EFI_STATUS  Status;
+
+  UiPageBegin (L"switch config");
+  if (Variant == NULL) {
+    UiPrintWarning (L"No " B00T_KNOWN_GOOD L" in " B00T_DIR_PATH L".\n");
+    UiPageEnd ();
+    return B00tUiStay;
+  }
+
+  if (Variant->Active) {
+    Print (L"%s is already active.\n", Variant->Name);
+    UiPageEnd ();
+    return B00tUiStay;
+  }
+
+  Print (L"Pre-flight check of %s:\n", Variant->Name);
+  if (!PreflightVariant (Context->OcDir, Variant)) {
+    UiPrintWarning (L"\nREFUSED: not safe to activate. Nothing was changed.\n");
+    UiPageEnd ();
+    return B00tUiStay;
+  }
+
+  Print (L"\nSwitch config.plist to %s and cold reset?\n", Variant->Name);
+  if (UiChoose (mNoYes, ARRAY_SIZE (mNoYes), 0) != 1) {
+    return B00tUiStay;
+  }
+
+  Print (L"\n");
+  Status = SwapConfig (Context->OcDir, Context->B00tDir, Context->ConfigData, Context->ConfigSize, Variant);
+  if (EFI_ERROR (Status)) {
+    UiPrintWarning (L"\nSWITCH FAILED. No reset.\n");
+    Print (L"Status: %r\n", Status);
+    UiPageEnd ();
+    return B00tUiExit;
+  }
+
+  Print (L"\nSwitched to %s. Cold reset...\n", Variant->Name);
+  DEBUG ((DEBUG_INFO, "B00T: Switched to %s, cold reset\n", Variant->Name));
+  return B00tUiReset;
+}
+
+STATIC
+B00T_UI_RESULT
+UiLoadAlternate (
+  IN B00T_CONTEXT  *Context
+  )
+{
+  CONST CHAR16  *Names[B00T_MAX_VARIANTS];
+  CHAR16        Lines[B00T_MAX_VARIANTS][B00T_MAX_NAME + 16];
+  UINTN         Index;
+  INTN          Choice;
+
+  UiPageBegin (L"LOAD-ALTERNATE");
+  Print (L"Config variants in %s:\n\n", B00T_DIR_PATH);
+  for (Index = 0; Index < Context->Count; ++Index) {
+    UnicodeSPrint (
+      Lines[Index],
+      sizeof (Lines[Index]),
+      L"%-28s%s",
+      Context->Variants[Index].Name,
+      Context->Variants[Index].Active ? L"<- ACTIVE" : L""
+      );
+    Names[Index] = Lines[Index];
+  }
+
+  Choice = UiChoose (Names, Context->Count, 0);
+  if (Choice < 0) {
+    return B00tUiStay;
+  }
+
+  return UiActivate (Context, &Context->Variants[Choice]);
+}
+
+/**
+  Load and start a tool from EFI\OC\Tools on the volume this tool runs from.
+**/
+STATIC
+EFI_STATUS
+UiRunTool (
+  IN B00T_CONTEXT  *Context,
+  IN CONST CHAR16  *Name,
+  IN CHAR16        *Options  OPTIONAL
+  )
+{
+  EFI_STATUS                 Status;
+  EFI_DEVICE_PATH_PROTOCOL   *DevicePath;
+  EFI_LOADED_IMAGE_PROTOCOL  *Child;
+  EFI_HANDLE                 Handle;
+  CHAR16                     Path[B00T_MAX_PATH];
+
+  UnicodeSPrint (Path, sizeof (Path), L"\\%s\\Tools\\%s", B00T_OC_DIR_PATH, Name);
+  DevicePath = FileDevicePath (Context->LoadedImage->DeviceHandle, Path);
+  if (DevicePath == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  Handle = NULL;
+  Status = gBS->LoadImage (FALSE, Context->ImageHandle, DevicePath, NULL, 0, &Handle);
+  FreePool (DevicePath);
+  if (EFI_ERROR (Status)) {
+    if ((Status == EFI_SECURITY_VIOLATION) && (Handle != NULL)) {
+      gBS->UnloadImage (Handle);
+    }
+
+    UiPrintWarning (L"Cannot load the tool.\n");
+    Print (L"%s - %r\n", Path, Status);
+    return Status;
+  }
+
+  if (Options != NULL) {
+    Status = gBS->HandleProtocol (Handle, &gEfiLoadedImageProtocolGuid, (VOID **)&Child);
+    if (EFI_ERROR (Status)) {
+      gBS->UnloadImage (Handle);
+      return Status;
+    }
+
+    Child->LoadOptions     = Options;
+    Child->LoadOptionsSize = (UINT32)StrSize (Options);
+  }
+
+  return gBS->StartImage (Handle, NULL, NULL);
+}
+
+STATIC
+B00T_UI_RESULT
+UiNvramReset (
+  IN B00T_CONTEXT  *Context
+  )
+{
+  EFI_STATUS  Status;
+
+  UiPageBegin (L"NVRAM-RESET");
+  UiPrintWarning (L"WARNING: CleanNvram.efi deletes NVRAM variables and does not preserve firmware boot entries.\n");
+  Print (L"OpenCore sets the variables in its config again on the next boot.\n\n");
+  Print (L"Run CleanNvram.efi, then cold reset?\n");
+  if (UiChoose (mNoYes, ARRAY_SIZE (mNoYes), 0) != 1) {
+    return B00tUiStay;
+  }
+
+  Print (L"\n");
+  Status = UiRunTool (Context, L"CleanNvram.efi", NULL);
+  Print (L"\nCleanNvram.efi returned %r.\n", Status);
+  if (EFI_ERROR (Status)) {
+    UiPageEnd ();
+    return B00tUiStay;
+  }
+
+  Print (L"Cold reset...\n");
+  return B00tUiReset;
+}
+
+STATIC
+B00T_UI_RESULT
+UiToggleSip (
+  IN B00T_CONTEXT  *Context
+  )
+{
+  EFI_STATUS  Status;
+  UINTN       Size;
+  UINT32      Csr;
+
+  UiPageBegin (L"DISABLE SIP - ENABLE SIP");
+  Size   = sizeof (Csr);
+  Status = gRT->GetVariable (L"csr-active-config", &gAppleBootVariableGuid, NULL, &Size, &Csr);
+  if (!EFI_ERROR (Status) && (Size == sizeof (Csr))) {
+    Print (L"csr-active-config is 0x%08X now.\n\n", Csr);
+  } else {
+    Print (L"csr-active-config is not set now (%r).\n\n", Status);
+  }
+
+  Print (L"Toggle SIP with CsrUtil.efi?\n");
+  if (UiChoose (mNoYes, ARRAY_SIZE (mNoYes), 0) != 1) {
+    return B00tUiStay;
+  }
+
+  Print (L"\n");
+  Status = UiRunTool (Context, L"CsrUtil.efi", L"toggle");
+  Print (L"\nCsrUtil.efi returned %r.\n", Status);
+  UiPageEnd ();
+  return B00tUiStay;
+}
+
+STATIC
+B00T_UI_RESULT
+UiShell (
+  IN B00T_CONTEXT  *Context
+  )
+{
+  EFI_STATUS  Status;
+
+  UiPageBegin (L"UEFI SHELL (type exit to come back)");
+  gST->ConOut->EnableCursor (gST->ConOut, TRUE);
+  Status = UiRunTool (Context, L"OpenShell.efi", NULL);
+  gST->ConOut->EnableCursor (gST->ConOut, FALSE);
+  if (EFI_ERROR (Status)) {
+    Print (L"\nOpenShell.efi returned %r.\n", Status);
+    UiPageEnd ();
+  }
+
+  return B00tUiStay;
+}
+
+STATIC
+B00T_UI_RESULT
+UiDumpDiskMap (
+  IN B00T_CONTEXT  *Context
+  )
+{
+  STATIC CONST CHAR16    *Title = L"DUMP-DISKMAP";
+  EFI_STATUS             Status;
+  EFI_HANDLE             *Handles;
+  UINTN                  HandleCount;
+  UINTN                  Index;
+  EFI_BLOCK_IO_PROTOCOL  *BlockIo;
+  VOID                   *FileSystem;
+  CHAR16                 *PathText;
+  UINT64                 Megabytes;
+
+  UiPageBegin (Title);
+  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &HandleCount, &Handles);
+  if (EFI_ERROR (Status)) {
+    Print (L"No block devices - %r\n", Status);
+    UiPageEnd ();
+    return B00tUiStay;
+  }
+
+  Print (L"%u block devices. FS = has a file system; this tool runs from the one marked.\n\n", (UINT32)HandleCount);
+  for (Index = 0; Index < HandleCount; ++Index) {
+    Status = gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo);
+    if (EFI_ERROR (Status) || (BlockIo->Media == NULL)) {
+      continue;
+    }
+
+    UiPageMore (Title);
+    Megabytes = BlockIo->Media->MediaPresent
+                  ? RShiftU64 (MultU64x32 (BlockIo->Media->LastBlock + 1, BlockIo->Media->BlockSize), 20)
+                  : 0;
+    Status = gBS->HandleProtocol (Handles[Index], &gEfiSimpleFileSystemProtocolGuid, &FileSystem);
+    Print (
+      L"%2u. %s %8Lu MB  %s  %s%s\n",
+      (UINT32)(Index + 1),
+      BlockIo->Media->LogicalPartition ? L"partition" : L"disk     ",
+      Megabytes,
+      BlockIo->Media->RemovableMedia ? L"removable" : L"fixed    ",
+      !EFI_ERROR (Status) ? L"FS" : L"  ",
+      Handles[Index] == Context->LoadedImage->DeviceHandle ? L"  <- B00tGeni3 runs from here" : L""
+      );
+    PathText = ConvertDevicePathToText (DevicePathFromHandle (Handles[Index]), FALSE, FALSE);
+    Print (L"    %s\n", PathText != NULL ? PathText : L"<no device path>");
+    if (PathText != NULL) {
+      FreePool (PathText);
+    }
+  }
+
+  FreePool (Handles);
+  UiPageEnd ();
+  return B00tUiStay;
+}
+
+/**
+  Write the ACPI tables to EFI\OC\B00tGeni3\ACPI-<date>-<time> with OcAcpiLib's
+  AcpiDumpTables, the function SysReport uses, and list what was written.
+**/
+STATIC
+B00T_UI_RESULT
+UiDumpAcpi (
+  IN B00T_CONTEXT  *Context
+  )
+{
+  STATIC CONST CHAR16  *Title = L"DUMP SSDT";
+  EFI_STATUS           Status;
+  EFI_TIME             Time;
+  EFI_FILE_PROTOCOL    *Folder;
+  EFI_FILE_INFO        *Info;
+  CHAR16               Name[32];
+  UINTN                Size;
+  UINTN                Files;
+  UINT64               Total;
+
+  UiPageBegin (Title);
+  Status = gRT->GetTime (&Time, NULL);
+  if (EFI_ERROR (Status)) {
+    ZeroMem (&Time, sizeof (Time));
+  }
+
+  UnicodeSPrint (
+    Name,
+    sizeof (Name),
+    L"ACPI-%04u%02u%02u-%02u%02u%02u",
+    Time.Year,
+    Time.Month,
+    Time.Day,
+    Time.Hour,
+    Time.Minute,
+    Time.Second
+    );
+  Status = Context->B00tDir->Open (
+                               Context->B00tDir,
+                               &Folder,
+                               Name,
+                               EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE,
+                               EFI_FILE_DIRECTORY
+                               );
+  if (EFI_ERROR (Status)) {
+    UiPrintWarning (L"Cannot create the folder.\n");
+    Print (L"%s\\%s - %r\n", B00T_DIR_PATH, Name, Status);
+    UiPageEnd ();
+    return B00tUiStay;
+  }
+
+  Status = AcpiDumpTables (Folder);
+  Print (L"ACPI tables -> %s\\%s - %r\n\n", B00T_DIR_PATH, Name, Status);
+
+  Files = 0;
+  Total = 0;
+  Info  = AllocatePool (SIZE_1KB);
+  if (Info != NULL) {
+    Folder->SetPosition (Folder, 0);
+    while (TRUE) {
+      Size   = SIZE_1KB;
+      Status = Folder->Read (Folder, &Size, Info);
+      if (EFI_ERROR (Status) || (Size == 0)) {
+        break;
+      }
+
+      if ((Info->Attribute & EFI_FILE_DIRECTORY) != 0) {
+        continue;
+      }
+
+      UiPageMore (Title);
+      Print (L"  %-16s %8Lu bytes\n", Info->FileName, Info->FileSize);
+      ++Files;
+      Total += Info->FileSize;
+    }
+
+    FreePool (Info);
+  }
+
+  Print (L"\n%u files, %Lu bytes.\n", (UINT32)Files, Total);
+  Folder->Flush (Folder);
+  Folder->Close (Folder);
+  UiPageEnd ();
+  return B00tUiStay;
+}
+
+/**
+  Run the mockup screen until the user leaves or an action needs a cold reset.
+**/
+STATIC
+B00T_UI_RESULT
+UiRun (
+  IN OUT B00T_CONTEXT  *Context
+  )
+{
+  EFI_INPUT_KEY   Key;
+  B00T_UI_RESULT  Result;
+  UINTN           Selected;
+  UINTN           Next;
+  UINTN           Index;
+  BOOLEAN         Redraw;
+  B00T_VARIANT    *KnownGood;
+
+  LoadConfigInfo (Context);
+  KnownGood = NULL;
+  for (Index = 0; Index < Context->Count; ++Index) {
+    if (B00tStriEqual (Context->Variants[Index].Name, B00T_KNOWN_GOOD)) {
+      KnownGood = &Context->Variants[Index];
+    }
+  }
+
+  Selected = B00T_SEL_LOAD;
+  Redraw   = TRUE;
+  while (TRUE) {
+    if (Redraw) {
+      UiDrawMain ();
+      UiDrawInfo (Context);
+      for (Index = 0; Index < B00T_SEL_COUNT; ++Index) {
+        UiDrawSel (Index, Index == Selected);
+      }
+
+      UiStatus (EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK), mUiSel[Selected].Hint);
+      Redraw = FALSE;
+    }
+
+    Key = WaitForKey ();
+    if (Key.ScanCode == SCAN_ESC) {
+      return B00tUiExit;
+    }
+
+    if ((Key.ScanCode == SCAN_UP) || (Key.ScanCode == SCAN_DOWN) || (Key.ScanCode == SCAN_LEFT) || (Key.ScanCode == SCAN_RIGHT)) {
+      Next = UiNeighbour (Selected, Key.ScanCode);
+      if (Next != Selected) {
+        UiDrawSel (Selected, FALSE);
+        Selected = Next;
+        UiDrawSel (Selected, TRUE);
+        UiStatus (EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK), mUiSel[Selected].Hint);
+      }
+
+      continue;
+    }
+
+    if (Key.UnicodeChar != CHAR_CARRIAGE_RETURN) {
+      continue;
+    }
+
+    switch (Selected) {
+      case B00T_SEL_DISCARD:
+        return B00tUiExit;
+      case B00T_SEL_RESTORE:
+        Result = UiActivate (Context, KnownGood);
+        break;
+      case B00T_SEL_LOAD:
+        Result = UiLoadAlternate (Context);
+        break;
+      case B00T_SEL_NVRAM:
+        Result = UiNvramReset (Context);
+        break;
+      case B00T_SEL_SIP:
+        Result = UiToggleSip (Context);
+        break;
+      case B00T_SEL_SHELL:
+        Result = UiShell (Context);
+        break;
+      case B00T_SEL_DISKMAP:
+        Result = UiDumpDiskMap (Context);
+        break;
+      case B00T_SEL_SSDT:
+        Result = UiDumpAcpi (Context);
+        break;
+      default:
+        //
+        // Not available yet: say so in the warning color.
+        //
+        UiStatus (EFI_TEXT_ATTR (EFI_LIGHTRED, EFI_BLACK), mUiSel[Selected].Hint);
+        continue;
+    }
+
+    if (Result != B00tUiStay) {
+      return Result;
+    }
+
+    Redraw = TRUE;
+  }
 }
 
 STATIC
@@ -1252,6 +2173,7 @@ UefiMain (
   EFI_INPUT_KEY                    Key;
   UINTN                            Choice;
   BOOLEAN                          Swapped;
+  STATIC B00T_CONTEXT              UiContext;
 
   Root    = NULL;
   OcDir   = NULL;
@@ -1323,14 +2245,25 @@ UefiMain (
   }
 
   //
-  // Phase 8b: the mockup screen is drawn but not wired up yet; any key goes on to the plain menu.
+  // The mockup screen when the console can show it, otherwise the plain menu below.
   //
   if (UiInit ()) {
-    UiDrawMain ();
-    WaitForKey ();
-    UiBlackout ();
+    UiContext.ImageHandle = ImageHandle;
+    UiContext.LoadedImage = LoadedImage;
+    UiContext.OcDir       = OcDir;
+    UiContext.B00tDir     = B00tDir;
+    UiContext.ConfigData  = ConfigData;
+    UiContext.ConfigSize  = ConfigSize;
+    UiContext.Variants    = Variants;
+    UiContext.Count       = Count;
+    if (UiRun (&UiContext) == B00tUiReset) {
+      Swapped = TRUE;
+    } else {
+      UiBlackout ();
+    }
+
     gST->ConOut->EnableCursor (gST->ConOut, TRUE);
-    Print (L"B00tGeni3 %s - config picker\n", B00T_VERSION);
+    goto Finish;
   }
 
   while (TRUE) {
@@ -1385,6 +2318,7 @@ UefiMain (
     break;
   }
 
+Finish:
   FreeVariants (Variants, Count);
   FreePool (ConfigData);
 

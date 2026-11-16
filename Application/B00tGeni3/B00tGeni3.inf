@@ -32,19 +32,24 @@
   DebugLib
   DevicePathLib
   MemoryAllocationLib
+  OcAcpiLib
   OcConfigurationLib
   OcCryptoLib
   OcStringLib
+  PrintLib
   UefiApplicationEntryPoint
   UefiBootServicesTableLib
   UefiLib
   UefiRuntimeServicesTableLib
 
 [Guids]
+  gAppleBootVariableGuid
   gEfiFileInfoGuid
 
 [Protocols]
+  gEfiBlockIoProtocolGuid
   gEfiGraphicsOutputProtocolGuid
   gEfiLoadedImageProtocolGuid
   gEfiLoadedImageDevicePathProtocolGuid
   gEfiSimpleFileSystemProtocolGuid
+  gEfiSimpleNetworkProtocolGuid

@@ -285,11 +285,11 @@ STATIC CONST UINT8  mArtSkull[16] = {
 
 //
 // Text of the mockup. Row is the line in the full 56-line layout; CompactRow is the line in the
-// 47-line compact layout or B00T_UI_HIDDEN.
+// compact layout or B00T_UI_HIDDEN. The last row of either layout is the status line.
 //
 #define B00T_UI_COLS          124
 #define B00T_UI_ROWS          56
-#define B00T_UI_COMPACT_ROWS  47
+#define B00T_UI_COMPACT_ROWS  48
 #define B00T_UI_HIDDEN        0xFF
 #define B00T_UI_FIELD_ROW     38
 #define B00T_UI_FIELD_COL     42
@@ -366,9 +366,6 @@ STATIC CONST B00T_UI_ITEM  mUiItems[] = {
   { 30, 22,   5, EFI_WHITE,    L"*#*" },
   { 30, 22, 115, EFI_WHITE,    L"*#*" },
   { 31, 23,   5, EFI_WHITE,    L"*#*" },
-  { 31, 23,  17, EFI_LIGHTGRAY, L"[ ] VERBOSE (-v)" },
-  { 31, 23,  53, EFI_LIGHTGRAY, L"[ ] SAFE BOOT (-x)" },
-  { 31, 23,  86, EFI_LIGHTGRAY, L"[ ] SINGLE USER (-s)" },
   { 31, 23, 115, EFI_WHITE,    L"*#*" },
   { 32, 24,   6, EFI_WHITE,    L"*#*" },
   { 32, 24, 114, EFI_WHITE,    L"*#*" },
@@ -378,9 +375,6 @@ STATIC CONST B00T_UI_ITEM  mUiItems[] = {
   { 34, 26,   6, EFI_WHITE,    L"*#*" },
   { 34, 26, 114, EFI_WHITE,    L"*#*" },
   { 35, 27,   5, EFI_WHITE,    L"*#*" },
-  { 35, 27,  13, EFI_LIGHTGRAY, L"[ ] DEBUG (debug=0x100)" },
-  { 35, 27,  47, EFI_LIGHTGRAY, L"[***ADDITIONAL-ARGS-LIST***]" },
-  { 35, 27,  86, EFI_LIGHTGRAY, L"[ EXTRAS/UTILITIES ]" },
   { 35, 27, 115, EFI_WHITE,    L"*#*" },
   { 36, 28,   6, EFI_WHITE,    L"*#*" },
   { 36, 28, 114, EFI_WHITE,    L"*#*" },
@@ -389,15 +383,12 @@ STATIC CONST B00T_UI_ITEM  mUiItems[] = {
   { 37, 29, 114, EFI_WHITE,    L"*#*" },
   { 38, 30,   5, EFI_WHITE,    L"*#*" },
   { 38, 30,  33, EFI_LIGHTGRAY, L"boot-arg=" },
-  { 38, 30,  81, EFI_LIGHTGRAY, L"::COMMIT" },
   { 38, 30, 115, EFI_WHITE,    L"*#*" },
   { 39, 31,   5, EFI_WHITE,    L"*#*" },
   { 39, 31, 115, EFI_WHITE,    L"*#*" },
   { 40, 32,   6, EFI_WHITE,    L"*#*" },
-  { 40, 32,  52, EFI_LIGHTGRAY, L"[ APPLY & REBOOT ]" },
   { 40, 32, 114, EFI_WHITE,    L"*#*" },
   { 41, 33,   6, EFI_WHITE,    L"*#*" },
-  { 41, 33,  47, EFI_LIGHTGRAY, L"[DISCARD CHANGES AND EXIT]" },
   { 41, 33, 114, EFI_WHITE,    L"*#*" },
   { 42, 34,   6, EFI_WHITE,    L"***************************************************************************************************************" },
   { 43, 35,   6, EFI_WHITE,    L"***************************************************************************************************************" },
@@ -411,23 +402,15 @@ STATIC CONST B00T_UI_ITEM  mUiItems[] = {
   { 45, 37,   5, EFI_WHITE,    L"** *********************************************************************************************************** **" },
   { 46, 38,   3, EFI_WHITE,    L"**" },
   { 46, 38,   7, EFI_WHITE,    L"**" },
-  { 46, 38,  19, EFI_LIGHTGRAY, L"RESTORE-FAILSAFE" },
   { 46, 38,  48, EFI_WHITE,    L"******************" },
-  { 46, 38,  84, EFI_LIGHTGRAY, L"NVRAM-RESET" },
   { 46, 38, 114, EFI_WHITE,    L"** **" },
   { 47, 39,   1, EFI_WHITE,    L"**** * *****" },
-  { 47, 39,  20, EFI_LIGHTGRAY, L"LOAD-ALTERNATE" },
   { 47, 39,  54, EFI_WHITE,    L"*******" },
-  { 47, 39,  78, EFI_LIGHTGRAY, L"DISABLE SIP - ENABLE SIP" },
   { 47, 39, 111, EFI_WHITE,    L"** * ****" },
   { 48, 40,   2, EFI_WHITE,    L"** ** ***" },
-  { 48, 40,  21, EFI_LIGHTGRAY, L"KEXT CONTROL" },
   { 48, 40,  48, EFI_WHITE,    L"******************" },
-  { 48, 40,  69, EFI_LIGHTGRAY, L"DUMP-DISKMAP" },
-  { 48, 40,  83, EFI_LIGHTGRAY, L"-" },
-  { 48, 40,  86, EFI_LIGHTGRAY, L"DUMP SSDT" },
-  { 48, 40,  97, EFI_LIGHTGRAY, L"-" },
-  { 48, 40, 100, EFI_LIGHTGRAY, L"UEFI SHELL" },
+  { 48, 40,  83, EFI_WHITE,    L"-" },
+  { 48, 40,  97, EFI_WHITE,    L"-" },
   { 48, 40, 112, EFI_WHITE,    L"*** ** **" },
   { 49, 41,   4, EFI_WHITE,    L"*" },
   { 49, 41,   7, EFI_WHITE,    L"*************************************************************************************************************" },
@@ -436,6 +419,57 @@ STATIC CONST B00T_UI_ITEM  mUiItems[] = {
   { 50, 42,  40, EFI_LIGHTBLUE, L"https://github.com/A7ent/B00tGeni3" },
   { 50, 42, 110, EFI_WHITE,    L"***** **" },
   { 51, 43,   3, EFI_WHITE,    L"** ************************************************************************************************************* **" },
+};
+
+//
+// Selectable items. Rows are full-layout rows; all sit below the logos.
+//
+typedef enum {
+  B00T_SEL_VERBOSE,
+  B00T_SEL_SAFE,
+  B00T_SEL_SINGLE,
+  B00T_SEL_DEBUG,
+  B00T_SEL_ARGS_LIST,
+  B00T_SEL_EXTRAS,
+  B00T_SEL_COMMIT,
+  B00T_SEL_APPLY,
+  B00T_SEL_DISCARD,
+  B00T_SEL_RESTORE,
+  B00T_SEL_LOAD,
+  B00T_SEL_KEXT,
+  B00T_SEL_NVRAM,
+  B00T_SEL_SIP,
+  B00T_SEL_DISKMAP,
+  B00T_SEL_SSDT,
+  B00T_SEL_SHELL,
+  B00T_SEL_COUNT
+} B00T_SEL;
+
+typedef struct {
+  UINT8           Row;
+  UINT8           Col;
+  CONST CHAR16    *Text;
+  CONST CHAR16    *Hint;
+} B00T_UI_SEL;
+
+STATIC CONST B00T_UI_SEL  mUiSel[B00T_SEL_COUNT] = {
+  { 31,  17, L"[ ] VERBOSE (-v)", L"Boot-args editing arrives in Phase 8d" },
+  { 31,  53, L"[ ] SAFE BOOT (-x)", L"Boot-args editing arrives in Phase 8d" },
+  { 31,  86, L"[ ] SINGLE USER (-s)", L"Boot-args editing arrives in Phase 8d" },
+  { 35,  13, L"[ ] DEBUG (debug=0x100)", L"Boot-args editing arrives in Phase 8d" },
+  { 35,  47, L"[***ADDITIONAL-ARGS-LIST***]", L"Boot-args editing arrives in Phase 8d" },
+  { 35,  86, L"[ EXTRAS/UTILITIES ]", L"EXTRAS/UTILITIES - coming soon" },
+  { 38,  81, L"::COMMIT", L"Boot-args editing arrives in Phase 8d" },
+  { 40,  52, L"[ APPLY & REBOOT ]", L"Boot-args editing arrives in Phase 8d" },
+  { 41,  47, L"[DISCARD CHANGES AND EXIT]", L"Return to the OpenCore picker, nothing changed" },
+  { 46,  19, L"RESTORE-FAILSAFE", L"Swap known-good.plist into config.plist, then cold reset" },
+  { 47,  20, L"LOAD-ALTERNATE", L"Pick a config variant, pre-flight check it, swap it in, then cold reset" },
+  { 48,  21, L"KEXT CONTROL", L"KEXT CONTROL - coming soon" },
+  { 46,  84, L"NVRAM-RESET", L"Delete NVRAM variables with CleanNvram.efi, then cold reset" },
+  { 47,  78, L"DISABLE SIP - ENABLE SIP", L"Toggle csr-active-config with CsrUtil.efi" },
+  { 48,  69, L"DUMP-DISKMAP", L"List block devices and file systems with their device paths" },
+  { 48,  86, L"DUMP SSDT", L"Write the ACPI tables to a dated folder inside EFI/OC/B00tGeni3" },
+  { 48, 100, L"UEFI SHELL", L"Start OpenShell.efi; type exit there to come back" },
 };
 
 #endif // B00T_ART_H
