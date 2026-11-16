@@ -51,7 +51,7 @@
 
 #include "B00tArt.h"
 
-#define B00T_VERSION         L"0.8c"
+#define B00T_VERSION         L"0.8d"
 #define B00T_TOOL_NAME       "B00tGeni3.efi"
 #define B00T_MAX_PATH        256
 #define B00T_MAX_ARGS        256
@@ -1028,18 +1028,44 @@ UiBlackout (
 }
 
 /**
-  Draw a logo given as one shade level per cell. Cells are full character cells, or
-  half size in the compact layout; the logo is centred in ColSpan x RowSpan cells.
+  Map a row of the full 56-line layout to the row it has on this console. The compact
+  layout uses smaller logos and drops the link line and the last skull row.
+**/
+STATIC
+UINTN
+UiRow (
+  IN UINTN  Row
+  )
+{
+  if (!mUi.Compact || (Row < 20)) {
+    return Row;
+  }
+
+  if (Row <= 47) {
+    return Row - 5;
+  }
+
+  if ((Row == 48) || (Row == 52)) {
+    return B00T_UI_HIDDEN;
+  }
+
+  return Row <= 51 ? Row - 6 : Row - 7;
+}
+
+/**
+  Draw a logo given as one shade level per cell, scaled to Width x Height pixels (before
+  the UI scale), centred in the layout's width and in RowSpan rows from Row down.
 **/
 STATIC
 VOID
-UiDrawCells (
+UiDrawArt (
   IN CONST UINT8  *Cells,
   IN UINTN        Cols,
   IN UINTN        Rows,
-  IN UINTN        Col,
   IN UINTN        Row,
   IN UINTN        RowSpan,
+  IN UINTN        Width,
+  IN UINTN        Height,
   IN UINT8        Red,
   IN UINT8        Green,
   IN UINT8        Blue
@@ -1047,19 +1073,13 @@ UiDrawCells (
 {
   EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Buffer;
   EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Pixel;
-  UINTN                          BlockWidth;
-  UINTN                          BlockHeight;
-  UINTN                          Width;
-  UINTN                          Height;
   UINTN                          X;
   UINTN                          Y;
   UINT8                          Shade;
 
-  BlockWidth  = mUi.Compact ? mUi.CellWidth / 2 : mUi.CellWidth;
-  BlockHeight = mUi.Compact ? mUi.CellHeight / 2 : mUi.CellHeight;
-  Width       = Cols * BlockWidth;
-  Height      = Rows * BlockHeight;
-  Buffer      = AllocatePool (Width * Height * sizeof (*Buffer));
+  Width  *= mUi.Scale;
+  Height *= mUi.Scale;
+  Buffer  = AllocatePool (Width * Height * sizeof (*Buffer));
   if (Buffer == NULL) {
     return;
   }
@@ -1067,7 +1087,7 @@ UiDrawCells (
   Pixel = Buffer;
   for (Y = 0; Y < Height; ++Y) {
     for (X = 0; X < Width; ++X) {
-      Shade           = mShadeLevels[Cells[(Y / BlockHeight) * Cols + X / BlockWidth]];
+      Shade           = mShadeLevels[Cells[(Y * Rows / Height) * Cols + X * Cols / Width]];
       Pixel->Red      = (UINT8)((UINTN)Red * Shade / 255);
       Pixel->Green    = (UINT8)((UINTN)Green * Shade / 255);
       Pixel->Blue     = (UINT8)((UINTN)Blue * Shade / 255);
@@ -1082,7 +1102,7 @@ UiDrawCells (
              EfiBltBufferToVideo,
              0,
              0,
-             mUi.PadX + (mUi.Col0 + Col) * mUi.CellWidth + (Cols * mUi.CellWidth - Width) / 2,
+             mUi.PadX + mUi.Col0 * mUi.CellWidth + (B00T_UI_COLS * mUi.CellWidth - Width) / 2,
              mUi.PadY + (mUi.Row0 + Row) * mUi.CellHeight + (RowSpan * mUi.CellHeight - Height) / 2,
              Width,
              Height,
@@ -1093,7 +1113,7 @@ UiDrawCells (
 
 /**
   Draw a 1 bit per pixel bitmap (most significant bit first, rows padded to a byte)
-  in white with its top left corner on a cell.
+  in one color with its top left corner on a cell. Row is a row of the full layout.
 **/
 STATIC
 VOID
@@ -1102,7 +1122,10 @@ UiDrawBits (
   IN UINTN        BitsWidth,
   IN UINTN        BitsHeight,
   IN UINTN        Col,
-  IN UINTN        Row
+  IN UINTN        Row,
+  IN UINT8        Red,
+  IN UINT8        Green,
+  IN UINT8        Blue
   )
 {
   EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Buffer;
@@ -1113,7 +1136,12 @@ UiDrawBits (
   UINTN                          X;
   UINTN                          Y;
   UINTN                          SourceX;
-  UINT8                          Value;
+  BOOLEAN                        Set;
+
+  Row = UiRow (Row);
+  if (Row == B00T_UI_HIDDEN) {
+    return;
+  }
 
   Stride = (BitsWidth + 7) / 8;
   Width  = BitsWidth * mUi.Scale;
@@ -1127,10 +1155,10 @@ UiDrawBits (
   for (Y = 0; Y < Height; ++Y) {
     for (X = 0; X < Width; ++X) {
       SourceX         = X / mUi.Scale;
-      Value           = (Bits[(Y / mUi.Scale) * Stride + SourceX / 8] & (0x80 >> (SourceX % 8))) != 0 ? 0xFF : 0;
-      Pixel->Red      = Value;
-      Pixel->Green    = Value;
-      Pixel->Blue     = Value;
+      Set             = (Bits[(Y / mUi.Scale) * Stride + SourceX / 8] & (0x80 >> (SourceX % 8))) != 0;
+      Pixel->Red      = Set ? Red : 0;
+      Pixel->Green    = Set ? Green : 0;
+      Pixel->Blue     = Set ? Blue : 0;
       Pixel->Reserved = 0;
       ++Pixel;
     }
@@ -1152,73 +1180,86 @@ UiDrawBits (
 }
 
 /**
-  Draw the mockup screen: the logos, every text item, the boot-arg field, then the small art.
-  The compact layout halves both logos and drops the rows that frees up.
+  Red skulls, the font has none: Count of them from Col, every Step cells.
 **/
 STATIC
 VOID
-UiDrawMain (
-  VOID
+UiDrawSkulls (
+  IN UINTN  Row,
+  IN UINTN  Col,
+  IN UINTN  Count,
+  IN UINTN  Step
   )
 {
-  UINTN   Index;
-  UINTN   Row;
-  UINTN   Shift;
-  CHAR16  Field[B00T_UI_FIELD_WIDTH + 1];
+  UINTN  Index;
 
-  UiBlackout ();
-  gST->ConOut->EnableCursor (gST->ConOut, FALSE);
+  for (Index = 0; Index < Count; ++Index) {
+    UiDrawBits (mArtSkull, 8, 16, Col + Index * Step, Row, 0xFF, 0x00, 0x00);
+  }
+}
 
-  //
-  // Logos first: the star and the tagline are text printed over cells inside the logo.
-  //
-  if (mUi.Compact) {
-    UiDrawCells (&mArtOtr[0][0], B00T_ART_OTR_COLS, B00T_ART_OTR_ROWS, B00T_ART_OTR_COL, 5, 6, 0xFF, 0xFF, 0xFF);
-    UiDrawCells (&mArtBig[0][0], B00T_ART_BIG_COLS, B00T_ART_BIG_ROWS, B00T_ART_BIG_COL, 12, 4, 0x00, 0xFF, 0x00);
-  } else {
-    UiDrawCells (&mArtOtr[0][0], B00T_ART_OTR_COLS, B00T_ART_OTR_ROWS, B00T_ART_OTR_COL, B00T_ART_OTR_ROW, B00T_ART_OTR_ROWS, 0xFF, 0xFF, 0xFF);
-    UiDrawCells (&mArtBig[0][0], B00T_ART_BIG_COLS, B00T_ART_BIG_ROWS, B00T_ART_BIG_COL, B00T_ART_BIG_ROW, B00T_ART_BIG_ROWS, 0x00, 0xFF, 0x00);
+/**
+  Turn text cells printed on the console's brown background into a bright yellow bar.
+  Text backgrounds only come in the 8 dark colors, so the pixels are recolored in place.
+**/
+STATIC
+VOID
+UiMakeBar (
+  IN UINTN  Row,
+  IN UINTN  Col,
+  IN UINTN  Width
+  )
+{
+  EFI_STATUS                     Status;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Buffer;
+  UINTN                          PixelWidth;
+  UINTN                          Index;
+  UINTN                          X;
+  UINTN                          Y;
+
+  Row = UiRow (Row);
+  if (Row == B00T_UI_HIDDEN) {
+    return;
   }
 
-  for (Index = 0; Index < ARRAY_SIZE (mUiItems); ++Index) {
-    Row = mUi.Compact ? mUiItems[Index].CompactRow : mUiItems[Index].Row;
-    if (Row == B00T_UI_HIDDEN) {
-      continue;
+  PixelWidth = Width * mUi.CellWidth;
+  Buffer     = AllocatePool (PixelWidth * mUi.CellHeight * sizeof (*Buffer));
+  if (Buffer == NULL) {
+    return;
+  }
+
+  X      = mUi.PadX + (mUi.Col0 + Col) * mUi.CellWidth;
+  Y      = mUi.PadY + (mUi.Row0 + Row) * mUi.CellHeight;
+  Status = mUi.Gop->Blt (mUi.Gop, Buffer, EfiBltVideoToBltBuffer, X, Y, 0, 0, PixelWidth, mUi.CellHeight, 0);
+  if (!EFI_ERROR (Status)) {
+    for (Index = 0; Index < PixelWidth * mUi.CellHeight; ++Index) {
+      if ((Buffer[Index].Red == 0x98) && (Buffer[Index].Green == 0x98) && (Buffer[Index].Blue == 0x00)) {
+        Buffer[Index].Red   = 0xFF;
+        Buffer[Index].Green = 0xFF;
+      }
     }
 
-    gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (mUiItems[Index].Color, EFI_BLACK));
-    gST->ConOut->SetCursorPosition (gST->ConOut, mUi.Col0 + mUiItems[Index].Col, mUi.Row0 + Row);
-    gST->ConOut->OutputString (gST->ConOut, (CHAR16 *)mUiItems[Index].Text);
+    mUi.Gop->Blt (mUi.Gop, Buffer, EfiBltBufferToVideo, 0, 0, X, Y, PixelWidth, mUi.CellHeight, 0);
   }
 
-  //
-  // Rows below the logos move up by this much in the compact layout.
-  //
-  Shift = mUi.Shift;
-
-  for (Index = 0; Index < B00T_UI_FIELD_WIDTH; ++Index) {
-    Field[Index] = L' ';
-  }
-
-  Field[Index] = L'\0';
-  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_BLACK, EFI_LIGHTGRAY));
-  gST->ConOut->SetCursorPosition (gST->ConOut, mUi.Col0 + B00T_UI_FIELD_COL, mUi.Row0 + B00T_UI_FIELD_ROW - Shift);
-  gST->ConOut->OutputString (gST->ConOut, Field);
-  gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK));
-
-  UiDrawBits (mArtSkull, 8, 16, B00T_ART_SKULL_COL, B00T_ART_SKULL_ROW - Shift);
-  UiDrawBits (mArtBanner, B00T_ART_BANNER_WIDTH, B00T_ART_BANNER_HEIGHT, B00T_ART_BANNER_COL, B00T_ART_BANNER_ROW - Shift);
+  FreePool (Buffer);
 }
 
 //
-// Phase 8c: the mockup screen wired up. Arrow keys move between the selectable
-// items, Enter runs the selected one, Esc leaves. Sub-screens are plain text pages.
+// The main screen (Phase 8c, layout redone in 8d from draft A2). Arrow keys move between the
+// selectable items, Enter runs the selected one, Esc leaves. Sub-screens are plain text pages.
 //
 typedef enum {
   B00tUiStay,
   B00tUiExit,
   B00tUiReset
 } B00T_UI_RESULT;
+
+typedef struct {
+  BOOLEAN    Pass;                        ///< Pre-flight result.
+  CHAR16     Serial[32];
+  CHAR16     BootArgs[B00T_MAX_ARGS];
+} B00T_VARIANT_INFO;
 
 typedef struct {
   EFI_HANDLE                   ImageHandle;
@@ -1231,6 +1272,11 @@ typedef struct {
   UINTN                        Count;
   CHAR16                       Serial[32];
   CHAR16                       ConfigBootArgs[B00T_MAX_ARGS];
+  CHAR16                       EditArgs[B00T_MAX_ARGS];      ///< The boot-arg line being edited.
+  B00T_VARIANT_INFO            Info[B00T_MAX_VARIANTS];
+  UINT8                        *OwnedConfig;                  ///< config.plist data after a COMMIT.
+  UINTN                        Cursor;                        ///< Variant under the list cursor.
+  UINTN                        Top;                           ///< First variant shown in the list.
 } B00T_CONTEXT;
 
 STATIC CONST CHAR16  *mNoYes[] = { L"NO  - go back", L"YES - do it" };
@@ -1258,7 +1304,7 @@ AsciiToUnicodeN (
 }
 
 /**
-  Print Text at a layout position, cut or padded with spaces to exactly Width cells.
+  Print Text at a position of the full layout, cut or padded with spaces to exactly Width cells.
 **/
 STATIC
 VOID
@@ -1272,6 +1318,11 @@ UiPutText (
 {
   CHAR16  Buffer[B00T_UI_COLS + 1];
   UINTN   Index;
+
+  Row = UiRow (Row);
+  if (Row == B00T_UI_HIDDEN) {
+    return;
+  }
 
   Width = MIN (Width, B00T_UI_COLS);
   for (Index = 0; (Index < Width) && (Text[Index] != L'\0'); ++Index) {
@@ -1289,6 +1340,156 @@ UiPutText (
   gST->ConOut->SetAttribute (gST->ConOut, EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK));
 }
 
+#define B00T_UI_HINT_ROW     53
+#define B00T_UI_LIST_ROW     35
+#define B00T_UI_LIST_ROWS    5
+#define B00T_UI_FIELD_ROW    28
+#define B00T_UI_FIELD_COL    18
+#define B00T_UI_FIELD_WIDTH  70
+
+typedef enum {
+  B00T_SEL_VERBOSE,
+  B00T_SEL_SAFE,
+  B00T_SEL_SINGLE,
+  B00T_SEL_DEBUG,
+  B00T_SEL_ARGS_LIST,
+  B00T_SEL_EXTRAS,
+  B00T_SEL_FIELD,
+  B00T_SEL_COMMIT,
+  B00T_SEL_APPLY,
+  B00T_SEL_ONCE,
+  B00T_SEL_DISCARD,
+  B00T_SEL_LIST,
+  B00T_SEL_RESTORE,
+  B00T_SEL_KEXT,
+  B00T_SEL_NVRAM,
+  B00T_SEL_SIP,
+  B00T_SEL_DISKMAP,
+  B00T_SEL_SSDT,
+  B00T_SEL_SHELL,
+  B00T_SEL_COUNT
+} B00T_SEL;
+
+typedef struct {
+  UINT8           Row;
+  UINT8           Col;
+  CONST CHAR16    *Text;
+  CONST CHAR16    *Hint;
+} B00T_UI_SEL;
+
+//
+// Selectable items at their place in the full layout. B00T_SEL_LIST is the variant list:
+// its row is the row of the list cursor.
+//
+STATIC CONST B00T_UI_SEL  mUiSel[B00T_SEL_COUNT] = {
+  { 24,   9, L"[ ] VERBOSE (-v)",             L"ENTER adds or removes -v in the boot-arg line"                                     },
+  { 24,  36, L"[ ] SAFE BOOT (-x)",           L"ENTER adds or removes -x in the boot-arg line"                                     },
+  { 24,  64, L"[ ] SINGLE USER (-s)",         L"ENTER adds or removes -s in the boot-arg line"                                     },
+  { 24,  92, L"[ ] DEBUG (debug=0x100)",      L"ENTER adds or removes debug=0x100 in the boot-arg line"                            },
+  { 26,  30, L"[***ADDITIONAL-ARGS-LIST***]", L"Pick common boot-args to add to or remove from the boot-arg line"                  },
+  { 26,  72, L"[ EXTRAS/UTILITIES ]",         L"EXTRAS/UTILITIES - coming soon"                                                    },
+  { 28,   9, L"boot-arg=",                    L"ENTER to type in the boot-arg line"                                                },
+  { 28,  88, L"::COMMIT",                     L"Save the boot-arg line into config.plist, no reset; OpenCore uses it from the next boot" },
+  { 30,  16, L"[ APPLY & REBOOT ]",           L"Save the boot-arg line into config.plist, then cold reset"                         },
+  { 30,  44, L"[ B00T ONCE ]",                L"UNTESTED: set NVRAM boot-args for this boot only and go back to the picker"        },
+  { 30,  78, L"[DISCARD CHANGES AND EXIT]",   L"Return to the OpenCore picker, nothing changed"                                    },
+  { 35,   5, L"",                             L"ENTER runs the pre-flight on this config, you confirm once, it is swapped in, then cold reset" },
+  { 41,   7, L"RESTORE-FAILSAFE",             L"Swap known-good.plist into config.plist, then cold reset"                          },
+  { 42,   7, L"KEXT CONTROL",                 L"KEXT CONTROL - coming soon"                                                        },
+  { 45,   9, L"NVRAM-RESET",                  L"Delete NVRAM variables with CleanNvram.efi, then cold reset"                       },
+  { 45,  31, L"DISABLE SIP - ENABLE SIP",     L"Toggle csr-active-config with CsrUtil.efi"                                         },
+  { 45,  64, L"DUMP-DISKMAP",                 L"List block devices and file systems with their device paths"                       },
+  { 45,  85, L"DUMP SSDT",                    L"Write the ACPI tables to a dated folder inside EFI/OC/B00tGeni3"                   },
+  { 45, 103, L"UEFI SHELL",                   L"Start OpenShell.efi; type exit there to come back"                                 },
+};
+
+//
+// Boot-args behind the four checkboxes, in B00T_SEL order.
+//
+STATIC CONST CHAR16  *mCheckTokens[] = { L"-v", L"-x", L"-s", L"debug=0x100" };
+
+/**
+  Look for Token as a whole space separated word in Args.
+**/
+STATIC
+BOOLEAN
+ArgsFind (
+  IN  CONST CHAR16  *Args,
+  IN  CONST CHAR16  *Token,
+  OUT UINTN         *Start  OPTIONAL
+  )
+{
+  UINTN  Index;
+  UINTN  Begin;
+  UINTN  Length;
+
+  Length = StrLen (Token);
+  Index  = 0;
+  while (Args[Index] != L'\0') {
+    while (Args[Index] == L' ') {
+      ++Index;
+    }
+
+    Begin = Index;
+    while ((Args[Index] != L'\0') && (Args[Index] != L' ')) {
+      ++Index;
+    }
+
+    if ((Index - Begin == Length) && (Length > 0) && (StrnCmp (&Args[Begin], Token, Length) == 0)) {
+      if (Start != NULL) {
+        *Start = Begin;
+      }
+
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+/**
+  Remove Token from Args if it is there, otherwise append it. Args holds B00T_MAX_ARGS characters.
+**/
+STATIC
+VOID
+ArgsToggle (
+  IN OUT CHAR16        *Args,
+  IN     CONST CHAR16  *Token
+  )
+{
+  UINTN  Start;
+  UINTN  End;
+  UINTN  Used;
+  UINTN  Length;
+
+  Length = StrLen (Token);
+  if (ArgsFind (Args, Token, &Start)) {
+    End = Start + Length;
+    if (Args[End] == L' ') {
+      ++End;
+    } else if (Start > 0) {
+      --Start;
+    }
+
+    CopyMem (&Args[Start], &Args[End], (StrLen (&Args[End]) + 1) * sizeof (CHAR16));
+    return;
+  }
+
+  Used = StrLen (Args);
+  if (Used + Length + 2 > B00T_MAX_ARGS) {
+    return;
+  }
+
+  if ((Used > 0) && (Args[Used - 1] != L' ')) {
+    StrCatS (Args, B00T_MAX_ARGS, L" ");
+  }
+
+  StrCatS (Args, B00T_MAX_ARGS, Token);
+}
+
+/**
+  Show Text centred on the hint line.
+**/
 STATIC
 VOID
 UiStatus (
@@ -1296,22 +1497,40 @@ UiStatus (
   IN CONST CHAR16  *Text
   )
 {
-  UiPutText (mUi.StatusRow, B00T_ART_BANNER_COL, B00T_UI_COLS - 2 * B00T_ART_BANNER_COL, Attribute, Text);
+  UINTN  Length;
+
+  Length = MIN (StrLen (Text), B00T_UI_COLS - 4);
+  UiPutText (B00T_UI_HINT_ROW, 2, B00T_UI_COLS - 4, Attribute, L"");
+  UiPutText (B00T_UI_HINT_ROW, (B00T_UI_COLS - Length) / 2, Length, Attribute, Text);
 }
 
 STATIC
 VOID
 UiDrawSel (
-  IN UINTN    Index,
-  IN BOOLEAN  Selected
+  IN CONST B00T_CONTEXT  *Context,
+  IN UINTN               Index,
+  IN BOOLEAN             Selected
   )
 {
+  CHAR16  Text[48];
+  UINTN   Color;
+
+  if (Index == B00T_SEL_LIST) {
+    return;
+  }
+
+  StrCpyS (Text, ARRAY_SIZE (Text), mUiSel[Index].Text);
+  if ((Index <= B00T_SEL_DEBUG) && ArgsFind (Context->EditArgs, mCheckTokens[Index], NULL)) {
+    Text[1] = L'x';
+  }
+
+  Color = ((Index == B00T_SEL_KEXT) || (Index == B00T_SEL_EXTRAS)) ? EFI_LIGHTGRAY : EFI_WHITE;
   UiPutText (
-    mUiSel[Index].Row - mUi.Shift,
+    mUiSel[Index].Row,
     mUiSel[Index].Col,
-    StrLen (mUiSel[Index].Text),
-    EFI_TEXT_ATTR (Selected ? EFI_YELLOW : EFI_LIGHTGRAY, EFI_BLACK),
-    mUiSel[Index].Text
+    StrLen (Text),
+    EFI_TEXT_ATTR (Selected ? EFI_YELLOW : Color, EFI_BLACK),
+    Text
     );
 }
 
@@ -1322,38 +1541,41 @@ UiDrawSel (
 STATIC
 UINTN
 UiNeighbour (
-  IN UINTN   Current,
-  IN UINT16  ScanCode
+  IN CONST B00T_CONTEXT  *Context,
+  IN UINTN               Current,
+  IN UINT16              ScanCode
   )
 {
   UINTN  Index;
   UINTN  Best;
   UINTN  BestScore;
   UINTN  Score;
-  UINTN  Row;
-  UINTN  Middle;
-  UINTN  CurrentRow;
-  UINTN  CurrentMiddle;
-
-  Best          = Current;
-  BestScore     = MAX_UINTN;
-  CurrentRow    = mUiSel[Current].Row;
-  CurrentMiddle = mUiSel[Current].Col * 2 + StrLen (mUiSel[Current].Text);
+  UINTN  Row[B00T_SEL_COUNT];
+  UINTN  Middle[B00T_SEL_COUNT];
 
   for (Index = 0; Index < B00T_SEL_COUNT; ++Index) {
-    Row    = mUiSel[Index].Row;
-    Middle = mUiSel[Index].Col * 2 + StrLen (mUiSel[Index].Text);
+    Row[Index]    = mUiSel[Index].Row;
+    Middle[Index] = mUiSel[Index].Col * 2 + StrLen (mUiSel[Index].Text);
+  }
+
+  Row[B00T_SEL_LIST]    = B00T_UI_LIST_ROW + Context->Cursor - Context->Top;
+  Middle[B00T_SEL_LIST] = mUiSel[B00T_SEL_LIST].Col * 2 + 40;
+
+  Best      = Current;
+  BestScore = MAX_UINTN;
+  for (Index = 0; Index < B00T_SEL_COUNT; ++Index) {
     if (  (Index == Current)
-       || ((ScanCode == SCAN_UP) && (Row >= CurrentRow))
-       || ((ScanCode == SCAN_DOWN) && (Row <= CurrentRow))
-       || ((ScanCode == SCAN_LEFT) && ((Row != CurrentRow) || (Middle >= CurrentMiddle)))
-       || ((ScanCode == SCAN_RIGHT) && ((Row != CurrentRow) || (Middle <= CurrentMiddle))))
+       || ((Index == B00T_SEL_LIST) && (Context->Count == 0))
+       || ((ScanCode == SCAN_UP) && (Row[Index] >= Row[Current]))
+       || ((ScanCode == SCAN_DOWN) && (Row[Index] <= Row[Current]))
+       || ((ScanCode == SCAN_LEFT) && ((Row[Index] != Row[Current]) || (Middle[Index] >= Middle[Current])))
+       || ((ScanCode == SCAN_RIGHT) && ((Row[Index] != Row[Current]) || (Middle[Index] <= Middle[Current]))))
     {
       continue;
     }
 
-    Score = (Row > CurrentRow ? Row - CurrentRow : CurrentRow - Row) * 1000
-            + (Middle > CurrentMiddle ? Middle - CurrentMiddle : CurrentMiddle - Middle);
+    Score = (Row[Index] > Row[Current] ? Row[Index] - Row[Current] : Row[Current] - Row[Index]) * 1000
+            + (Middle[Index] > Middle[Current] ? Middle[Index] - Middle[Current] : Middle[Current] - Middle[Index]);
     if (Score < BestScore) {
       BestScore = Score;
       Best      = Index;
@@ -1457,12 +1679,19 @@ UiChoose (
 }
 
 /**
-  Read the serial number and the boot-args string out of the active config.plist.
+  Read the serial number and the boot-args string out of a config.plist held in memory.
+
+  @retval FALSE  OpenCore's parser rejects the data; both strings are empty.
 **/
 STATIC
-VOID
-LoadConfigInfo (
-  IN OUT B00T_CONTEXT  *Context
+BOOLEAN
+ParseConfigInfo (
+  IN  CONST UINT8  *Data,
+  IN  UINTN        Size,
+  OUT CHAR16       *Serial,
+  IN  UINTN        SerialCount,
+  OUT CHAR16       *BootArgs,
+  IN  UINTN        BootArgsCount
   )
 {
   EFI_STATUS        Status;
@@ -1473,27 +1702,27 @@ LoadConfigInfo (
   UINT32            Index2;
   OC_ASSOC          *Map;
 
-  Context->Serial[0]         = L'\0';
-  Context->ConfigBootArgs[0] = L'\0';
+  Serial[0]   = L'\0';
+  BootArgs[0] = L'\0';
 
-  Copy = AllocateCopyPool (Context->ConfigSize, Context->ConfigData);
+  Copy = AllocateCopyPool (Size, Data);
   if (Copy == NULL) {
-    return;
+    return FALSE;
   }
 
   Config     = &mPreflightConfig;
   ErrorCount = 0;
-  Status     = OcConfigurationInit (Config, Copy, (UINT32)Context->ConfigSize, &ErrorCount);
+  Status     = OcConfigurationInit (Config, Copy, (UINT32)Size, &ErrorCount);
   if (EFI_ERROR (Status)) {
     FreePool (Copy);
-    return;
+    return FALSE;
   }
 
   AsciiToUnicodeN (
     OC_BLOB_GET (&Config->PlatformInfo.Generic.SystemSerialNumber),
     Config->PlatformInfo.Generic.SystemSerialNumber.Size,
-    Context->Serial,
-    ARRAY_SIZE (Context->Serial)
+    Serial,
+    SerialCount
     );
 
   for (Index = 0; Index < Config->Nvram.Add.Count; ++Index) {
@@ -1507,8 +1736,8 @@ LoadConfigInfo (
         AsciiToUnicodeN (
           (CONST CHAR8 *)OC_BLOB_GET (Map->Values[Index2]),
           Map->Values[Index2]->Size,
-          Context->ConfigBootArgs,
-          ARRAY_SIZE (Context->ConfigBootArgs)
+          BootArgs,
+          BootArgsCount
           );
       }
     }
@@ -1516,6 +1745,7 @@ LoadConfigInfo (
 
   OcConfigurationFree (Config);
   FreePool (Copy);
+  return TRUE;
 }
 
 /**
@@ -1582,86 +1812,6 @@ BootDeviceText (
 }
 
 /**
-  Fill in the system info row and the boot-arg field. Called on every redraw, so a
-  SIP toggle shows up when its page closes.
-**/
-STATIC
-VOID
-UiDrawInfo (
-  IN CONST B00T_CONTEXT  *Context
-  )
-{
-  EFI_STATUS                   Status;
-  EFI_HANDLE                   *Handles;
-  UINTN                        HandleCount;
-  EFI_SIMPLE_NETWORK_PROTOCOL  *Network;
-  CHAR16                       Text[B00T_MAX_ARGS];
-  CHAR8                        Args[B00T_MAX_ARGS];
-  UINTN                        Size;
-  UINT32                       Csr;
-  UINTN                        Value;
-
-  Value = EFI_TEXT_ATTR (EFI_LIGHTGREEN, EFI_BLACK);
-
-  BootDeviceText (Context->LoadedImage->DeviceHandle, Text, sizeof (Text));
-  UiPutText (0, 47, 16, Value, Text);
-
-  StrCpyS (Text, ARRAY_SIZE (Text), L"n/a");
-  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiSimpleNetworkProtocolGuid, NULL, &HandleCount, &Handles);
-  if (!EFI_ERROR (Status)) {
-    if (  (HandleCount > 0)
-       && !EFI_ERROR (gBS->HandleProtocol (Handles[0], &gEfiSimpleNetworkProtocolGuid, (VOID **)&Network))
-       && (Network->Mode != NULL))
-    {
-      UnicodeSPrint (
-        Text,
-        sizeof (Text),
-        L"%02X%02X%02X%02X%02X%02X",
-        Network->Mode->CurrentAddress.Addr[0],
-        Network->Mode->CurrentAddress.Addr[1],
-        Network->Mode->CurrentAddress.Addr[2],
-        Network->Mode->CurrentAddress.Addr[3],
-        Network->Mode->CurrentAddress.Addr[4],
-        Network->Mode->CurrentAddress.Addr[5]
-        );
-    }
-
-    FreePool (Handles);
-  }
-
-  UiPutText (0, 69, 15, Value, Text);
-  UiPutText (0, 93, 29, Value, Context->Serial[0] != L'\0' ? Context->Serial : L"n/a");
-
-  Size   = sizeof (Csr);
-  Status = gRT->GetVariable (L"csr-active-config", &gAppleBootVariableGuid, NULL, &Size, &Csr);
-  if (!EFI_ERROR (Status) && (Size == sizeof (Csr))) {
-    UnicodeSPrint (Text, sizeof (Text), L"0x%08X", Csr);
-  } else {
-    StrCpyS (Text, ARRAY_SIZE (Text), L"not set");
-  }
-
-  UiPutText (1, 47, 10, Value, Text);
-
-  Size   = sizeof (Args) - 1;
-  Status = gRT->GetVariable (L"boot-args", &gAppleBootVariableGuid, NULL, &Size, Args);
-  if (!EFI_ERROR (Status)) {
-    AsciiToUnicodeN (Args, Size, Text, ARRAY_SIZE (Text));
-  } else {
-    StrCpyS (Text, ARRAY_SIZE (Text), L"not set");
-  }
-
-  UiPutText (1, 69, 53, Value, Text);
-
-  UiPutText (
-    B00T_UI_FIELD_ROW - mUi.Shift,
-    B00T_UI_FIELD_COL,
-    B00T_UI_FIELD_WIDTH,
-    EFI_TEXT_ATTR (EFI_BLACK, EFI_LIGHTGRAY),
-    Context->ConfigBootArgs
-    );
-}
-
-/**
   Pre-flight a variant, ask, and swap it in through the Phase 4 path.
 **/
 STATIC
@@ -1710,38 +1860,6 @@ UiActivate (
   Print (L"\nSwitched to %s. Cold reset...\n", Variant->Name);
   DEBUG ((DEBUG_INFO, "B00T: Switched to %s, cold reset\n", Variant->Name));
   return B00tUiReset;
-}
-
-STATIC
-B00T_UI_RESULT
-UiLoadAlternate (
-  IN B00T_CONTEXT  *Context
-  )
-{
-  CONST CHAR16  *Names[B00T_MAX_VARIANTS];
-  CHAR16        Lines[B00T_MAX_VARIANTS][B00T_MAX_NAME + 16];
-  UINTN         Index;
-  INTN          Choice;
-
-  UiPageBegin (L"LOAD-ALTERNATE");
-  Print (L"Config variants in %s:\n\n", B00T_DIR_PATH);
-  for (Index = 0; Index < Context->Count; ++Index) {
-    UnicodeSPrint (
-      Lines[Index],
-      sizeof (Lines[Index]),
-      L"%-28s%s",
-      Context->Variants[Index].Name,
-      Context->Variants[Index].Active ? L"<- ACTIVE" : L""
-      );
-    Names[Index] = Lines[Index];
-  }
-
-  Choice = UiChoose (Names, Context->Count, 0);
-  if (Choice < 0) {
-    return B00tUiStay;
-  }
-
-  return UiActivate (Context, &Context->Variants[Choice]);
 }
 
 /**
@@ -2016,12 +2134,819 @@ UiDumpAcpi (
   return B00tUiStay;
 }
 
+typedef struct {
+  UINT8           Row;
+  UINT8           Col;
+  UINT8           Color;
+  CONST CHAR16    *Text;
+} B00T_UI_LABEL;
+
+//
+// Fixed text of the screen, at its place in the full layout.
+//
+STATIC CONST B00T_UI_LABEL  mUiLabels[] = {
+  {  1,  3, EFI_LIGHTGRAY, L"BOOT DEVICE:"                                                                         },
+  {  1, 46, EFI_LIGHTGRAY, L"MAC:"                                                                                 },
+  {  1, 86, EFI_LIGHTGRAY, L"SERIAL:"                                                                              },
+  {  2,  3, EFI_LIGHTGRAY, L"SIP LEVEL:"                                                                           },
+  {  2, 46, EFI_LIGHTGRAY, L"B00t ARGS:"                                                                           },
+  {  2, 86, EFI_LIGHTGRAY, L"ACTIVE:"                                                                              },
+  { 27,  9, EFI_LIGHTGRAY, L"CURRENT CONFIG BOOT-ARGs:"                                                            },
+  { 30, 58, EFI_LIGHTRED,  L"untested"                                                                             },
+  { 33,  7, EFI_LIGHTGRAY, L"VARIANT                    STATE      CHECK"                                          },
+  { 39, 64, EFI_LIGHTGRAY, L"Compared with the active config"                                                      },
+  { 46,  9, EFI_LIGHTRED,  L"wipes boot list"                                                                      },
+  { 48, 45, EFI_LIGHTCYAN, L"https://github.com/a7ent/B00tGeni3"                                                   },
+  { 54, 23, EFI_LIGHTGRAY, L"\x2190 \x2191 \x2193 \x2192  move        ENTER  select        ESC  back to the OpenCore picker" },
+};
+
+STATIC
+VOID
+UiHLine (
+  IN UINTN  Row,
+  IN UINTN  Col0,
+  IN UINTN  Col1,
+  IN UINTN  Attribute
+  )
+{
+  CHAR16  Line[B00T_UI_COLS + 1];
+  UINTN   Index;
+
+  for (Index = 0; Index + Col0 <= Col1; ++Index) {
+    Line[Index] = BOXDRAW_HORIZONTAL;
+  }
+
+  Line[Index] = L'\0';
+  UiPutText (Row, Col0, Index, Attribute, Line);
+}
+
 /**
-  Run the mockup screen until the user leaves or an action needs a cold reset.
+  Draw a box frame with a title on its top edge. The inside is left alone.
+**/
+STATIC
+VOID
+UiBox (
+  IN UINTN         Row0,
+  IN UINTN         Col0,
+  IN UINTN         Row1,
+  IN UINTN         Col1,
+  IN UINTN         Attribute,
+  IN BOOLEAN       Double,
+  IN CONST CHAR16  *Title,
+  IN UINTN         TitleAttribute
+  )
+{
+  CHAR16  Line[B00T_UI_COLS + 1];
+  UINTN   Width;
+  UINTN   Index;
+
+  Width = Col1 - Col0 + 1;
+  for (Index = 0; Index < Width; ++Index) {
+    Line[Index] = Double ? BOXDRAW_DOUBLE_HORIZONTAL : BOXDRAW_HORIZONTAL;
+  }
+
+  Line[Width]     = L'\0';
+  Line[0]         = Double ? BOXDRAW_DOUBLE_DOWN_RIGHT : BOXDRAW_DOWN_RIGHT;
+  Line[Width - 1] = Double ? BOXDRAW_DOUBLE_DOWN_LEFT : BOXDRAW_DOWN_LEFT;
+  UiPutText (Row0, Col0, Width, Attribute, Line);
+  Line[0]         = Double ? BOXDRAW_DOUBLE_UP_RIGHT : BOXDRAW_UP_RIGHT;
+  Line[Width - 1] = Double ? BOXDRAW_DOUBLE_UP_LEFT : BOXDRAW_UP_LEFT;
+  UiPutText (Row1, Col0, Width, Attribute, Line);
+
+  Line[0] = Double ? BOXDRAW_DOUBLE_VERTICAL : BOXDRAW_VERTICAL;
+  Line[1] = L'\0';
+  for (Index = Row0 + 1; Index < Row1; ++Index) {
+    UiPutText (Index, Col0, 1, Attribute, Line);
+    UiPutText (Index, Col1, 1, Attribute, Line);
+  }
+
+  UnicodeSPrint (Line, sizeof (Line), L" %s ", Title);
+  UiPutText (Row0, Col0 + 2, MIN (StrLen (Line), Width - 4), TitleAttribute, Line);
+}
+
+/**
+  Draw everything on the screen that never changes: logos, skulls, frames, labels, banner.
+  The compact layout uses smaller logos and drops the link line and the last skull row.
+**/
+STATIC
+VOID
+UiDrawMain (
+  VOID
+  )
+{
+  STATIC CONST CHAR16  *Tagline = L"..I'm never gonna push you out, cause you're not in..";
+  STATIC CONST CHAR16  *Title   = L"~~ B00tGeni3   2026 ~~          By:  oTR-DaRkNeSs  x  CL4UD3-C0D3 ";
+  UINTN                Index;
+  UINTN                White;
+  UINTN                Green;
+  UINTN                LastLogoRow;
+
+  UiBlackout ();
+  gST->ConOut->EnableCursor (gST->ConOut, FALSE);
+
+  White = EFI_TEXT_ATTR (EFI_WHITE, EFI_BLACK);
+  Green = EFI_TEXT_ATTR (EFI_LIGHTGREEN, EFI_BLACK);
+
+  //
+  // Logos first: the tagline is text printed over cells inside the red logo.
+  //
+  if (mUi.Compact) {
+    UiDrawArt (&mArtOtr[0][0], B00T_ART_OTR_COLS, B00T_ART_OTR_ROWS, 5, 6, 450, 96, 0xFF, 0x00, 0x00);
+    UiDrawArt (&mArtBig[0][0], B00T_ART_BIG_COLS, B00T_ART_BIG_ROWS, 11, 4, 448, 56, 0x00, 0xFF, 0x00);
+    LastLogoRow = 14;
+  } else {
+    UiDrawArt (&mArtOtr[0][0], B00T_ART_OTR_COLS, B00T_ART_OTR_ROWS, 5, 8, 600, 128, 0xFF, 0x00, 0x00);
+    UiDrawArt (&mArtBig[0][0], B00T_ART_BIG_COLS, B00T_ART_BIG_ROWS, 13, 7, 896, 112, 0x00, 0xFF, 0x00);
+    LastLogoRow = 19;
+  }
+
+  UiPutText (
+    mUi.Compact ? 9 : 10,
+    (B00T_UI_COLS - StrLen (Tagline)) / 2,
+    StrLen (Tagline),
+    EFI_TEXT_ATTR (EFI_LIGHTRED, EFI_BLACK),
+    Tagline
+    );
+
+  UiDrawSkulls (4, 0, B00T_UI_COLS / 2, 2);
+  UiDrawSkulls (20, 0, B00T_UI_COLS / 2, 2);
+  UiDrawSkulls (22, 0, B00T_UI_COLS / 2, 2);
+  UiDrawSkulls (52, 0, B00T_UI_COLS / 2, 2);
+  for (Index = 5; Index <= LastLogoRow; ++Index) {
+    UiDrawSkulls (Index, 0, 2, 2);
+    UiDrawSkulls (Index, 120, 2, 2);
+  }
+
+  //
+  // Title line: the skull between the name and the year is a bitmap on the blank cell.
+  //
+  UiPutText (21, 24, StrLen (Title), EFI_TEXT_ATTR (EFI_LIGHTRED, EFI_BLACK), Title);
+  UiDrawSkulls (21, 24 + 13, 1, 1);
+  UiPutText (21, 24 + StrLen (Title), 5, Green, L"<cc/>");
+
+  UiBox (0, 0, 3, 123, EFI_TEXT_ATTR (EFI_LIGHTRED, EFI_BLACK), TRUE, L"**SYSTEM INFO::**", Green);
+  UiBox (23, 3, 31, 120, White, FALSE, L"BOOT-ARGS", Green);
+  UiBox (32, 3, 43, 58, White, FALSE, L"CONFIGS", Green);
+  UiBox (44, 3, 47, 120, White, FALSE, L"B00T-TOOLS", Green);
+  UiHLine (34, 4, 57, EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK));
+  UiHLine (40, 4, 57, EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK));
+
+  for (Index = 0; Index < ARRAY_SIZE (mUiLabels); ++Index) {
+    UiPutText (
+      mUiLabels[Index].Row,
+      mUiLabels[Index].Col,
+      StrLen (mUiLabels[Index].Text),
+      EFI_TEXT_ATTR (mUiLabels[Index].Color, EFI_BLACK),
+      mUiLabels[Index].Text
+      );
+  }
+
+  UiDrawBits (mArtBanner, B00T_ART_BANNER_WIDTH, B00T_ART_BANNER_HEIGHT, 8, 49, 0xFF, 0xFF, 0xFF);
+}
+
+/**
+  Fill in the system info box. Called on every redraw, so a SIP toggle shows up
+  when its page closes.
+**/
+STATIC
+VOID
+UiDrawInfo (
+  IN CONST B00T_CONTEXT  *Context
+  )
+{
+  EFI_STATUS                   Status;
+  EFI_HANDLE                   *Handles;
+  UINTN                        HandleCount;
+  EFI_SIMPLE_NETWORK_PROTOCOL  *Network;
+  CHAR16                       Text[B00T_MAX_ARGS];
+  CHAR8                        Args[B00T_MAX_ARGS];
+  CONST CHAR16                 *Active;
+  UINTN                        Size;
+  UINTN                        Index;
+  UINT32                       Csr;
+  UINTN                        Value;
+
+  Value = EFI_TEXT_ATTR (EFI_LIGHTGREEN, EFI_BLACK);
+
+  BootDeviceText (Context->LoadedImage->DeviceHandle, Text, sizeof (Text));
+  UiPutText (1, 16, 28, Value, Text);
+
+  StrCpyS (Text, ARRAY_SIZE (Text), L"n/a");
+  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiSimpleNetworkProtocolGuid, NULL, &HandleCount, &Handles);
+  if (!EFI_ERROR (Status)) {
+    if (  (HandleCount > 0)
+       && !EFI_ERROR (gBS->HandleProtocol (Handles[0], &gEfiSimpleNetworkProtocolGuid, (VOID **)&Network))
+       && (Network->Mode != NULL))
+    {
+      UnicodeSPrint (
+        Text,
+        sizeof (Text),
+        L"%02X%02X%02X%02X%02X%02X",
+        Network->Mode->CurrentAddress.Addr[0],
+        Network->Mode->CurrentAddress.Addr[1],
+        Network->Mode->CurrentAddress.Addr[2],
+        Network->Mode->CurrentAddress.Addr[3],
+        Network->Mode->CurrentAddress.Addr[4],
+        Network->Mode->CurrentAddress.Addr[5]
+        );
+    }
+
+    FreePool (Handles);
+  }
+
+  UiPutText (1, 51, 30, Value, Text);
+  UiPutText (1, 94, 28, Value, Context->Serial[0] != L'\0' ? Context->Serial : L"n/a");
+
+  Size   = sizeof (Csr);
+  Status = gRT->GetVariable (L"csr-active-config", &gAppleBootVariableGuid, NULL, &Size, &Csr);
+  if (!EFI_ERROR (Status) && (Size == sizeof (Csr))) {
+    UnicodeSPrint (Text, sizeof (Text), L"0x%08X", Csr);
+  } else {
+    StrCpyS (Text, ARRAY_SIZE (Text), L"not set");
+  }
+
+  UiPutText (2, 16, 28, Value, Text);
+
+  Size   = sizeof (Args) - 1;
+  Status = gRT->GetVariable (L"boot-args", &gAppleBootVariableGuid, NULL, &Size, Args);
+  if (!EFI_ERROR (Status)) {
+    AsciiToUnicodeN (Args, Size, Text, ARRAY_SIZE (Text));
+  } else {
+    StrCpyS (Text, ARRAY_SIZE (Text), L"not set");
+  }
+
+  UiPutText (2, 57, 27, Value, Text);
+
+  Active = L"(matches no variant)";
+  for (Index = 0; Index < Context->Count; ++Index) {
+    if (Context->Variants[Index].Active) {
+      Active = Context->Variants[Index].Name;
+    }
+  }
+
+  UiPutText (2, 94, 28, Value, Active);
+}
+
+/**
+  Draw the four checkboxes, the boot-arg line and its "edited" note.
+**/
+STATIC
+VOID
+UiDrawArgs (
+  IN CONST B00T_CONTEXT  *Context,
+  IN BOOLEAN             Editing,
+  IN UINTN               Selected
+  )
+{
+  CHAR16  Text[B00T_MAX_ARGS + 1];
+  UINTN   Index;
+  UINTN   Length;
+  BOOLEAN Edited;
+
+  for (Index = B00T_SEL_VERBOSE; Index <= B00T_SEL_DEBUG; ++Index) {
+    UiDrawSel (Context, Index, Index == Selected);
+  }
+
+  //
+  // A line longer than the field shows its end, which is where typing happens.
+  //
+  UnicodeSPrint (Text, sizeof (Text), L"%s%s", Context->EditArgs, Editing ? L"_" : L"");
+  Length = StrLen (Text);
+  UiPutText (
+    B00T_UI_FIELD_ROW,
+    B00T_UI_FIELD_COL,
+    B00T_UI_FIELD_WIDTH,
+    EFI_TEXT_ATTR (EFI_BLACK, EFI_LIGHTGRAY),
+    &Text[Length > B00T_UI_FIELD_WIDTH ? Length - B00T_UI_FIELD_WIDTH : 0]
+    );
+
+  Edited = StrCmp (Context->EditArgs, Context->ConfigBootArgs) != 0;
+  UiPutText (27, 36, 30, EFI_TEXT_ATTR (EFI_YELLOW, EFI_BLACK), Edited ? L"edited, not saved" : L"");
+}
+
+/**
+  Draw the variant list. With Focus the cursor line is a yellow bar.
+**/
+STATIC
+VOID
+UiDrawList (
+  IN CONST B00T_CONTEXT  *Context,
+  IN BOOLEAN             Focus
+  )
+{
+  CONST B00T_VARIANT  *Variant;
+  CONST CHAR16        *State;
+  CHAR16              Name[28];
+  CHAR16              Text[64];
+  UINTN               Line;
+  UINTN               Index;
+  UINTN               Row;
+  BOOLEAN             Pass;
+
+  for (Line = 0; Line < B00T_UI_LIST_ROWS; ++Line) {
+    Index = Context->Top + Line;
+    Row   = B00T_UI_LIST_ROW + Line;
+    if (Index >= Context->Count) {
+      UiPutText (
+        Row,
+        4,
+        54,
+        EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK),
+        (Line == 0) && (Context->Count == 0) ? L"   no config variants in " B00T_DIR_PATH : L""
+        );
+      continue;
+    }
+
+    Variant = &Context->Variants[Index];
+    Pass    = Context->Info[Index].Pass;
+    State   = Variant->Active ? L"ACTIVE" : (B00tStriEqual (Variant->Name, B00T_KNOWN_GOOD) ? L"FAILSAFE" : L"");
+    StrnCpyS (Name, ARRAY_SIZE (Name), Variant->Name, ARRAY_SIZE (Name) - 2);
+
+    if ((Index == Context->Cursor) && Focus) {
+      UnicodeSPrint (Text, sizeof (Text), L" > %-27s%-11s%s", Name, State, Pass ? L"PASS" : L"REFUSED");
+      UiPutText (Row, 4, 54, EFI_TEXT_ATTR (EFI_BLACK, EFI_BROWN), Text);
+      UiMakeBar (Row, 4, 54);
+      continue;
+    }
+
+    UiPutText (Row, 4, 3, EFI_TEXT_ATTR (EFI_WHITE, EFI_BLACK), Index == Context->Cursor ? L" >" : L"");
+    UiPutText (Row, 7, 27, EFI_TEXT_ATTR (Pass ? EFI_WHITE : EFI_LIGHTGRAY, EFI_BLACK), Name);
+    UiPutText (Row, 34, 11, EFI_TEXT_ATTR (Variant->Active ? EFI_LIGHTGREEN : EFI_LIGHTCYAN, EFI_BLACK), State);
+    UiPutText (Row, 45, 13, EFI_TEXT_ATTR (Pass ? EFI_LIGHTGREEN : EFI_LIGHTRED, EFI_BLACK), Pass ? L"PASS" : L"REFUSED");
+  }
+}
+
+/**
+  Draw the box about the variant under the list cursor.
+**/
+STATIC
+VOID
+UiDrawOverview (
+  IN CONST B00T_CONTEXT  *Context
+  )
+{
+  CONST B00T_VARIANT       *Variant;
+  CONST B00T_VARIANT_INFO  *Info;
+  CHAR16                   Text[B00T_MAX_ARGS + 16];
+  UINTN                    Gray;
+  UINTN                    White;
+  UINTN                    Row;
+  BOOLEAN                  Same;
+
+  Gray  = EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK);
+  White = EFI_TEXT_ATTR (EFI_WHITE, EFI_BLACK);
+
+  if (Context->Count == 0) {
+    UiBox (32, 61, 43, 120, White, FALSE, L"no variant", EFI_TEXT_ATTR (EFI_YELLOW, EFI_BLACK));
+    for (Row = 33; Row <= 42; ++Row) {
+      UiPutText (Row, 62, 58, Gray, L"");
+    }
+
+    return;
+  }
+
+  Variant = &Context->Variants[Context->Cursor];
+  Info    = &Context->Info[Context->Cursor];
+  UiBox (32, 61, 43, 120, White, FALSE, Variant->Name, EFI_TEXT_ATTR (EFI_YELLOW, EFI_BLACK));
+  UiHLine (38, 62, 119, Gray);
+  UiPutText (39, 64, 31, Gray, L"Compared with the active config");
+
+  UiPutText (33, 64, 13, Gray, L"Pre-flight");
+  UiPutText (33, 77, 42, EFI_TEXT_ATTR (Info->Pass ? EFI_LIGHTGREEN : EFI_LIGHTRED, EFI_BLACK), Info->Pass ? L"PASS" : L"REFUSED");
+
+  UnicodeSPrint (Text, sizeof (Text), L"%u bytes", (UINT32)Variant->Size);
+  UiPutText (34, 64, 13, Gray, L"Size");
+  UiPutText (34, 77, 42, White, Text);
+
+  UnicodeSPrint (
+    Text,
+    sizeof (Text),
+    L"%02x%02x%02x%02x ... %02x%02x%02x%02x",
+    Variant->Hash[0],
+    Variant->Hash[1],
+    Variant->Hash[2],
+    Variant->Hash[3],
+    Variant->Hash[SHA256_DIGEST_SIZE - 4],
+    Variant->Hash[SHA256_DIGEST_SIZE - 3],
+    Variant->Hash[SHA256_DIGEST_SIZE - 2],
+    Variant->Hash[SHA256_DIGEST_SIZE - 1]
+    );
+  UiPutText (35, 64, 13, Gray, L"SHA-256");
+  UiPutText (35, 77, 42, White, Text);
+
+  UiPutText (36, 64, 13, Gray, L"State");
+  UiPutText (
+    36,
+    77,
+    42,
+    White,
+    Variant->Active ? L"active" : (B00tStriEqual (Variant->Name, B00T_KNOWN_GOOD) ? L"failsafe" : L"-")
+    );
+  UiPutText (37, 62, 58, Gray, L"");
+
+  Same = StrCmp (Info->BootArgs, Context->ConfigBootArgs) == 0;
+  UiPutText (40, 64, 13, Gray, L"boot-args");
+  UiPutText (40, 77, 42, Same ? White : EFI_TEXT_ATTR (EFI_YELLOW, EFI_BLACK), Info->BootArgs[0] != L'\0' ? Info->BootArgs : L"(none)");
+
+  Same = StrCmp (Info->Serial, Context->Serial) == 0;
+  UnicodeSPrint (Text, sizeof (Text), L"%s  %s", Info->Serial[0] != L'\0' ? Info->Serial : L"(none)", Same ? L"same" : L"differs");
+  UiPutText (41, 64, 13, Gray, L"serial");
+  UiPutText (41, 77, 42, Same ? White : EFI_TEXT_ATTR (EFI_YELLOW, EFI_BLACK), Text);
+
+  if (!Info->Pass) {
+    UiPutText (42, 64, 55, EFI_TEXT_ATTR (EFI_LIGHTRED, EFI_BLACK), L"ENTER shows what the pre-flight found");
+  } else if (Variant->Active) {
+    UiPutText (42, 64, 55, Gray, L"this is the active config");
+  } else {
+    UiPutText (42, 64, 55, EFI_TEXT_ATTR (EFI_YELLOW, EFI_BLACK), L"ENTER  swap it in, then cold reset");
+  }
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+UiNullOutputString (
+  IN EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL  *This,
+  IN CHAR16                           *String
+  )
+{
+  return EFI_SUCCESS;
+}
+
+/**
+  Run the unchanged Phase 5 pre-flight on every variant with its text output switched off,
+  and read each variant's serial number and boot-args for the list and the overview box.
+**/
+STATIC
+VOID
+UiLoadInfo (
+  IN OUT B00T_CONTEXT  *Context
+  )
+{
+  EFI_TEXT_STRING  Saved;
+  UINTN            Index;
+
+  Saved                      = gST->ConOut->OutputString;
+  gST->ConOut->OutputString = UiNullOutputString;
+  for (Index = 0; Index < Context->Count; ++Index) {
+    Context->Info[Index].Pass = PreflightVariant (Context->OcDir, &Context->Variants[Index]);
+  }
+
+  gST->ConOut->OutputString = Saved;
+
+  for (Index = 0; Index < Context->Count; ++Index) {
+    ParseConfigInfo (
+      Context->Variants[Index].Data,
+      Context->Variants[Index].Size,
+      Context->Info[Index].Serial,
+      ARRAY_SIZE (Context->Info[Index].Serial),
+      Context->Info[Index].BootArgs,
+      ARRAY_SIZE (Context->Info[Index].BootArgs)
+      );
+  }
+}
+
+/**
+  Type in the boot-arg line. Enter keeps the text, Esc puts the previous text back.
+  Characters that would need escaping in the plist are not accepted.
+**/
+STATIC
+VOID
+UiEditField (
+  IN OUT B00T_CONTEXT  *Context
+  )
+{
+  EFI_INPUT_KEY  Key;
+  CHAR16         Saved[B00T_MAX_ARGS];
+  UINTN          Length;
+
+  StrCpyS (Saved, ARRAY_SIZE (Saved), Context->EditArgs);
+  UiStatus (EFI_TEXT_ATTR (EFI_YELLOW, EFI_BLACK), L"Type the boot-args.  ENTER = done   ESC = undo   BACKSPACE = delete");
+  while (TRUE) {
+    UiDrawArgs (Context, TRUE, B00T_SEL_FIELD);
+    Key    = WaitForKey ();
+    Length = StrLen (Context->EditArgs);
+    if (Key.UnicodeChar == CHAR_CARRIAGE_RETURN) {
+      break;
+    }
+
+    if (Key.ScanCode == SCAN_ESC) {
+      StrCpyS (Context->EditArgs, ARRAY_SIZE (Context->EditArgs), Saved);
+      break;
+    }
+
+    if (Key.UnicodeChar == CHAR_BACKSPACE) {
+      if (Length > 0) {
+        Context->EditArgs[Length - 1] = L'\0';
+      }
+
+      continue;
+    }
+
+    if (  (Key.UnicodeChar >= 0x20)
+       && (Key.UnicodeChar < 0x7F)
+       && (Key.UnicodeChar != L'<')
+       && (Key.UnicodeChar != L'>')
+       && (Key.UnicodeChar != L'&')
+       && (Length + 2 < B00T_MAX_ARGS))
+    {
+      Context->EditArgs[Length]     = Key.UnicodeChar;
+      Context->EditArgs[Length + 1] = L'\0';
+    }
+  }
+}
+
+/**
+  ADDITIONAL-ARGS-LIST: choose common boot-args to add to or remove from the line.
+**/
+STATIC
+VOID
+UiArgsList (
+  IN OUT B00T_CONTEXT  *Context
+  )
+{
+  STATIC CONST CHAR16  *Common[] = {
+    L"keepsyms=1",
+    L"alcid=1",
+    L"npci=0x2000",
+    L"npci=0x3000",
+    L"agdpmod=pikera",
+    L"-wegnoegpu",
+    L"-igfxvesa",
+    L"-no_compat_check"
+  };
+  CONST CHAR16         *Names[ARRAY_SIZE (Common)];
+  CHAR16               Lines[ARRAY_SIZE (Common)][32];
+  UINTN                Index;
+  INTN                 Choice;
+
+  Choice = 0;
+  while (TRUE) {
+    UiPageBegin (L"ADDITIONAL-ARGS-LIST");
+    Print (L"boot-arg line: %s\n\n", Context->EditArgs);
+    Print (L"Enter adds the arg, or removes it if it is already in the line. Esc when done.\n");
+    for (Index = 0; Index < ARRAY_SIZE (Common); ++Index) {
+      UnicodeSPrint (
+        Lines[Index],
+        sizeof (Lines[Index]),
+        L"[%s] %s",
+        ArgsFind (Context->EditArgs, Common[Index], NULL) ? L"x" : L" ",
+        Common[Index]
+        );
+      Names[Index] = Lines[Index];
+    }
+
+    Choice = UiChoose (Names, ARRAY_SIZE (Common), (UINTN)Choice);
+    if (Choice < 0) {
+      return;
+    }
+
+    ArgsToggle (Context->EditArgs, Common[Choice]);
+  }
+}
+
+/**
+  Make a copy of the active config.plist in which only the text of the boot-args string
+  is replaced by the edited line. Nothing else in the file is parsed or rewritten.
+  Prints the reason when it cannot be done.
+**/
+STATIC
+EFI_STATUS
+BuildEditedConfig (
+  IN  CONST B00T_CONTEXT  *Context,
+  OUT UINT8               **NewData,
+  OUT UINTN               *NewSize
+  )
+{
+  STATIC CONST CHAR8  Key[]   = "<key>boot-args</key>";
+  STATIC CONST CHAR8  Open[]  = "<string>";
+  STATIC CONST CHAR8  Close[] = "</string>";
+  CONST CHAR8         *Data;
+  CHAR8               Old[B00T_MAX_ARGS];
+  CHAR8               New[B00T_MAX_ARGS];
+  UINTN               Size;
+  UINTN               Index;
+  UINTN               Found;
+  UINTN               Position;
+  UINTN               ValueStart;
+  UINTN               ValueEnd;
+  UINTN               OldLength;
+  UINTN               NewLength;
+
+  Data     = (CONST CHAR8 *)Context->ConfigData;
+  Size     = Context->ConfigSize;
+  Found    = 0;
+  Position = 0;
+  for (Index = 0; Index + sizeof (Key) - 1 <= Size; ++Index) {
+    if (CompareMem (&Data[Index], Key, sizeof (Key) - 1) == 0) {
+      ++Found;
+      Position = Index + sizeof (Key) - 1;
+    }
+  }
+
+  if (Found != 1) {
+    Print (L"  config.plist has %u boot-args keys; this needs exactly one.\n", (UINT32)Found);
+    return EFI_UNSUPPORTED;
+  }
+
+  while ((Position < Size) && ((Data[Position] == ' ') || (Data[Position] == '\t') || (Data[Position] == '\r') || (Data[Position] == '\n'))) {
+    ++Position;
+  }
+
+  if ((Position + sizeof (Open) - 1 > Size) || (CompareMem (&Data[Position], Open, sizeof (Open) - 1) != 0)) {
+    Print (L"  The boot-args key is not followed by a <string> value.\n");
+    return EFI_UNSUPPORTED;
+  }
+
+  ValueStart = Position + sizeof (Open) - 1;
+  ValueEnd   = ValueStart;
+  while ((ValueEnd + sizeof (Close) - 1 <= Size) && (CompareMem (&Data[ValueEnd], Close, sizeof (Close) - 1) != 0)) {
+    ++ValueEnd;
+  }
+
+  if (ValueEnd + sizeof (Close) - 1 > Size) {
+    Print (L"  The boot-args <string> value has no end.\n");
+    return EFI_UNSUPPORTED;
+  }
+
+  //
+  // The text in the file must be exactly what OpenCore's parser reported for boot-args.
+  // That rules out escaped characters and makes sure this is the string OpenCore uses.
+  //
+  UnicodeStrToAsciiStrS (Context->ConfigBootArgs, Old, sizeof (Old));
+  UnicodeStrToAsciiStrS (Context->EditArgs, New, sizeof (New));
+  OldLength = ValueEnd - ValueStart;
+  NewLength = AsciiStrLen (New);
+  if ((OldLength != AsciiStrLen (Old)) || (CompareMem (&Data[ValueStart], Old, OldLength) != 0)) {
+    Print (L"  The boot-args text in the file is not the plain string OpenCore reads from it.\n");
+    return EFI_UNSUPPORTED;
+  }
+
+  *NewSize = Size - OldLength + NewLength;
+  *NewData = AllocatePool (*NewSize);
+  if (*NewData == NULL) {
+    Print (L"  Out of memory.\n");
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  CopyMem (*NewData, Data, ValueStart);
+  CopyMem (*NewData + ValueStart, New, NewLength);
+  CopyMem (*NewData + ValueStart + NewLength, &Data[ValueEnd], Size - ValueEnd);
+  return EFI_SUCCESS;
+}
+
+/**
+  COMMIT and APPLY & REBOOT: put the edited boot-arg line into a copy of config.plist,
+  pre-flight the copy, and swap it in through the Phase 4 path. With Reset the caller
+  cold resets; without, the tool carries on with the new config.
 **/
 STATIC
 B00T_UI_RESULT
-UiRun (
+UiSaveArgs (
+  IN OUT B00T_CONTEXT  *Context,
+  IN     BOOLEAN       Reset
+  )
+{
+  EFI_STATUS    Status;
+  B00T_VARIANT  Edited;
+  CHAR16        Serial[32];
+  CHAR16        Args[B00T_MAX_ARGS];
+  UINTN         Index;
+
+  UiPageBegin (Reset ? L"APPLY & REBOOT" : L"COMMIT");
+  if (StrCmp (Context->EditArgs, Context->ConfigBootArgs) == 0) {
+    Print (L"The boot-arg line is the same as in config.plist. Nothing to save.\n");
+    UiPageEnd ();
+    return B00tUiStay;
+  }
+
+  Print (L"boot-args in config.plist now: %s\n", Context->ConfigBootArgs);
+  Print (L"new boot-args:                 %s\n\n", Context->EditArgs);
+
+  ZeroMem (&Edited, sizeof (Edited));
+  StrCpyS (Edited.Name, ARRAY_SIZE (Edited.Name), L"edited-boot-args");
+  Print (L"Edit a copy of config.plist:\n");
+  Status = BuildEditedConfig (Context, &Edited.Data, &Edited.Size);
+  if (EFI_ERROR (Status)) {
+    UiPrintWarning (L"\nREFUSED: cannot edit this config safely. Nothing was changed.\n");
+    UiPageEnd ();
+    return B00tUiStay;
+  }
+
+  Print (L"  OK, %u bytes (was %u)\n", (UINT32)Edited.Size, (UINT32)Context->ConfigSize);
+  Sha256 (Edited.Hash, Edited.Data, Edited.Size);
+
+  Print (L"Pre-flight check of the copy:\n");
+  if (!PreflightVariant (Context->OcDir, &Edited)) {
+    UiPrintWarning (L"\nREFUSED: the edited copy fails the pre-flight. Nothing was changed.\n");
+    FreePool (Edited.Data);
+    UiPageEnd ();
+    return B00tUiStay;
+  }
+
+  Print (L"Read the copy back with OpenCore's parser:\n");
+  if (  !ParseConfigInfo (Edited.Data, Edited.Size, Serial, ARRAY_SIZE (Serial), Args, ARRAY_SIZE (Args))
+     || (StrCmp (Args, Context->EditArgs) != 0)
+     || (StrCmp (Serial, Context->Serial) != 0))
+  {
+    UiPrintWarning (L"\nREFUSED: the copy does not read back with the new boot-args. Nothing was changed.\n");
+    FreePool (Edited.Data);
+    UiPageEnd ();
+    return B00tUiStay;
+  }
+
+  Print (L"  OK, boot-args = %s\n", Args);
+  Print (L"\nWrite the copy to config.plist%s?\n", Reset ? L" and cold reset" : L" (no reset)");
+  if (UiChoose (mNoYes, ARRAY_SIZE (mNoYes), 0) != 1) {
+    FreePool (Edited.Data);
+    return B00tUiStay;
+  }
+
+  Print (L"\n");
+  Status = SwapConfig (Context->OcDir, Context->B00tDir, Context->ConfigData, Context->ConfigSize, &Edited);
+  if (EFI_ERROR (Status)) {
+    UiPrintWarning (L"\nSAVE FAILED. No reset.\n");
+    Print (L"Status: %r\n", Status);
+    FreePool (Edited.Data);
+    UiPageEnd ();
+    return B00tUiExit;
+  }
+
+  DEBUG ((DEBUG_INFO, "B00T: boot-args saved to config.plist, reset %d\n", Reset));
+  if (Reset) {
+    Print (L"\nSaved. Cold reset...\n");
+    FreePool (Edited.Data);
+    return B00tUiReset;
+  }
+
+  //
+  // Carry on with the new config: it is what is on disk now.
+  //
+  if (Context->OwnedConfig != NULL) {
+    FreePool (Context->OwnedConfig);
+  }
+
+  Context->OwnedConfig = Edited.Data;
+  Context->ConfigData  = Edited.Data;
+  Context->ConfigSize  = Edited.Size;
+  StrCpyS (Context->ConfigBootArgs, ARRAY_SIZE (Context->ConfigBootArgs), Context->EditArgs);
+  for (Index = 0; Index < Context->Count; ++Index) {
+    Context->Variants[Index].Active = (Context->Variants[Index].Size == Edited.Size)
+                                      && (CompareMem (Context->Variants[Index].Data, Edited.Data, Edited.Size) == 0);
+  }
+
+  Print (L"\nSaved. OpenCore uses it from the next boot.\n");
+  UiPageEnd ();
+  return B00tUiStay;
+}
+
+/**
+  B00T ONCE: set NVRAM boot-args to the edited line and go back to the picker without a
+  reset. config.plist is not touched. Not yet confirmed with a real macOS boot.
+**/
+STATIC
+B00T_UI_RESULT
+UiBootOnce (
+  IN B00T_CONTEXT  *Context
+  )
+{
+  EFI_STATUS  Status;
+  CHAR8       Args[B00T_MAX_ARGS];
+
+  UiPageBegin (L"B00T ONCE");
+  UiPrintWarning (L"UNTESTED: not yet confirmed with a real macOS boot.\n");
+  Print (L"Sets NVRAM boot-args to:\n  %s\n", Context->EditArgs);
+  Print (L"and goes back to the OpenCore picker without a reset. config.plist is not changed.\n\n");
+  Print (L"Set it?\n");
+  if (UiChoose (mNoYes, ARRAY_SIZE (mNoYes), 0) != 1) {
+    return B00tUiStay;
+  }
+
+  UnicodeStrToAsciiStrS (Context->EditArgs, Args, sizeof (Args));
+  Status = gRT->SetVariable (
+                  L"boot-args",
+                  &gAppleBootVariableGuid,
+                  EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
+                  AsciiStrLen (Args),
+                  Args
+                  );
+  Print (L"\nSet NVRAM boot-args - %r\n", Status);
+  if (EFI_ERROR (Status)) {
+    UiPageEnd ();
+    return B00tUiStay;
+  }
+
+  Print (L"Back to the picker...\n");
+  gBS->Stall (1500000);
+  return B00tUiExit;
+}
+
+/**
+  Run the main screen until the user leaves or an action needs a cold reset.
+**/
+STATIC
+B00T_UI_RESULT
+UiLoop (
   IN OUT B00T_CONTEXT  *Context
   )
 {
@@ -2030,10 +2955,21 @@ UiRun (
   UINTN           Selected;
   UINTN           Next;
   UINTN           Index;
+  UINTN           Yellow;
   BOOLEAN         Redraw;
   B00T_VARIANT    *KnownGood;
 
-  LoadConfigInfo (Context);
+  ParseConfigInfo (
+    Context->ConfigData,
+    Context->ConfigSize,
+    Context->Serial,
+    ARRAY_SIZE (Context->Serial),
+    Context->ConfigBootArgs,
+    ARRAY_SIZE (Context->ConfigBootArgs)
+    );
+  StrCpyS (Context->EditArgs, ARRAY_SIZE (Context->EditArgs), Context->ConfigBootArgs);
+  UiLoadInfo (Context);
+
   KnownGood = NULL;
   for (Index = 0; Index < Context->Count; ++Index) {
     if (B00tStriEqual (Context->Variants[Index].Name, B00T_KNOWN_GOOD)) {
@@ -2041,17 +2977,23 @@ UiRun (
     }
   }
 
-  Selected = B00T_SEL_LOAD;
-  Redraw   = TRUE;
+  Yellow          = EFI_TEXT_ATTR (EFI_YELLOW, EFI_BLACK);
+  Context->Cursor = 0;
+  Context->Top    = 0;
+  Selected        = Context->Count > 0 ? B00T_SEL_LIST : B00T_SEL_RESTORE;
+  Redraw          = TRUE;
   while (TRUE) {
     if (Redraw) {
       UiDrawMain ();
       UiDrawInfo (Context);
       for (Index = 0; Index < B00T_SEL_COUNT; ++Index) {
-        UiDrawSel (Index, Index == Selected);
+        UiDrawSel (Context, Index, Index == Selected);
       }
 
-      UiStatus (EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK), mUiSel[Selected].Hint);
+      UiDrawArgs (Context, FALSE, Selected);
+      UiDrawList (Context, Selected == B00T_SEL_LIST);
+      UiDrawOverview (Context);
+      UiStatus (Yellow, mUiSel[Selected].Hint);
       Redraw = FALSE;
     }
 
@@ -2061,14 +3003,41 @@ UiRun (
     }
 
     if ((Key.ScanCode == SCAN_UP) || (Key.ScanCode == SCAN_DOWN) || (Key.ScanCode == SCAN_LEFT) || (Key.ScanCode == SCAN_RIGHT)) {
-      Next = UiNeighbour (Selected, Key.ScanCode);
-      if (Next != Selected) {
-        UiDrawSel (Selected, FALSE);
-        Selected = Next;
-        UiDrawSel (Selected, TRUE);
-        UiStatus (EFI_TEXT_ATTR (EFI_LIGHTGRAY, EFI_BLACK), mUiSel[Selected].Hint);
+      //
+      // Inside the variant list up and down move its cursor first.
+      //
+      if ((Selected == B00T_SEL_LIST) && (Key.ScanCode == SCAN_UP) && (Context->Cursor > 0)) {
+        --Context->Cursor;
+        Context->Top = MIN (Context->Top, Context->Cursor);
+        UiDrawList (Context, TRUE);
+        UiDrawOverview (Context);
+        continue;
       }
 
+      if ((Selected == B00T_SEL_LIST) && (Key.ScanCode == SCAN_DOWN) && (Context->Cursor + 1 < Context->Count)) {
+        ++Context->Cursor;
+        if (Context->Cursor >= Context->Top + B00T_UI_LIST_ROWS) {
+          Context->Top = Context->Cursor + 1 - B00T_UI_LIST_ROWS;
+        }
+
+        UiDrawList (Context, TRUE);
+        UiDrawOverview (Context);
+        continue;
+      }
+
+      Next = UiNeighbour (Context, Selected, Key.ScanCode);
+      if (Next == Selected) {
+        continue;
+      }
+
+      UiDrawSel (Context, Selected, FALSE);
+      UiDrawSel (Context, Next, TRUE);
+      if ((Selected == B00T_SEL_LIST) || (Next == B00T_SEL_LIST)) {
+        UiDrawList (Context, Next == B00T_SEL_LIST);
+      }
+
+      Selected = Next;
+      UiStatus (Yellow, mUiSel[Selected].Hint);
       continue;
     }
 
@@ -2077,13 +3046,38 @@ UiRun (
     }
 
     switch (Selected) {
+      case B00T_SEL_VERBOSE:
+      case B00T_SEL_SAFE:
+      case B00T_SEL_SINGLE:
+      case B00T_SEL_DEBUG:
+        ArgsToggle (Context->EditArgs, mCheckTokens[Selected]);
+        UiDrawArgs (Context, FALSE, Selected);
+        continue;
+      case B00T_SEL_FIELD:
+        UiEditField (Context);
+        UiDrawArgs (Context, FALSE, Selected);
+        UiStatus (Yellow, mUiSel[Selected].Hint);
+        continue;
+      case B00T_SEL_ARGS_LIST:
+        UiArgsList (Context);
+        Result = B00tUiStay;
+        break;
+      case B00T_SEL_COMMIT:
+        Result = UiSaveArgs (Context, FALSE);
+        break;
+      case B00T_SEL_APPLY:
+        Result = UiSaveArgs (Context, TRUE);
+        break;
+      case B00T_SEL_ONCE:
+        Result = UiBootOnce (Context);
+        break;
       case B00T_SEL_DISCARD:
         return B00tUiExit;
+      case B00T_SEL_LIST:
+        Result = UiActivate (Context, &Context->Variants[Context->Cursor]);
+        break;
       case B00T_SEL_RESTORE:
         Result = UiActivate (Context, KnownGood);
-        break;
-      case B00T_SEL_LOAD:
-        Result = UiLoadAlternate (Context);
         break;
       case B00T_SEL_NVRAM:
         Result = UiNvramReset (Context);
@@ -2114,6 +3108,26 @@ UiRun (
 
     Redraw = TRUE;
   }
+}
+
+STATIC
+B00T_UI_RESULT
+UiRun (
+  IN OUT B00T_CONTEXT  *Context
+  )
+{
+  B00T_UI_RESULT  Result;
+
+  Result = UiLoop (Context);
+  if (Context->OwnedConfig != NULL) {
+    //
+    // The caller still owns the buffer it passed in; only the COMMIT copy is freed here.
+    //
+    FreePool (Context->OwnedConfig);
+    Context->OwnedConfig = NULL;
+  }
+
+  return Result;
 }
 
 STATIC
