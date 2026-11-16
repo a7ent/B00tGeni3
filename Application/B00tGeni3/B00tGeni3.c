@@ -51,7 +51,7 @@
 
 #include "B00tArt.h"
 
-#define B00T_VERSION         L"0.8d"
+#define B00T_VERSION         L"0.8e"
 #define B00T_TOOL_NAME       "B00tGeni3.efi"
 #define B00T_MAX_PATH        256
 #define B00T_MAX_ARGS        256
@@ -2665,18 +2665,49 @@ UiArgsList (
   IN OUT B00T_CONTEXT  *Context
   )
 {
-  STATIC CONST CHAR16  *Common[] = {
-    L"keepsyms=1",
-    L"alcid=1",
-    L"npci=0x2000",
-    L"npci=0x3000",
-    L"agdpmod=pikera",
-    L"-wegnoegpu",
-    L"-igfxvesa",
-    L"-no_compat_check"
+  //
+  // From the Dortania install guide and the acidanthera kext documentation, read 2026-11-16.
+  //
+  STATIC CONST CHAR16  *Common[][2] = {
+    { L"keepsyms=1", L"print symbols on a kernel panic (goes with debug=0x100)" },
+    { L"npci=0x3000", L"boot stalls at PCI configuration begin and there is no Above 4G option" },
+    { L"alcid=1", L"AppleALC audio layout-id 1 (type another id in the line)" },
+    { L"alcverbs=1", L"AppleALC alc-verb support" },
+    { L"-alcoff", L"disable AppleALC" },
+    { L"-wegnoegpu", L"disable all external GPUs, keep the iGPU" },
+    { L"-wegnoigpu", L"disable the internal GPU" },
+    { L"-wegswitchgpu", L"disable the iGPU when an external GPU is installed" },
+    { L"-wegoff", L"disable WhateverGreen" },
+    { L"-wegbeta", L"WhateverGreen on unsupported macOS versions" },
+    { L"agdpmod=pikera", L"board-id to board-ix: Navi RX 5000/6000 black screen" },
+    { L"agdpmod=vit9696", L"disable the board-id check" },
+    { L"agdpmod=ignore", L"disable the AGDP patches" },
+    { L"-igfxvesa", L"disable Intel graphics acceleration" },
+    { L"-radvesa", L"disable AMD video acceleration" },
+    { L"-igfxblr", L"backlight registers fix, KBL/CFL/ICL" },
+    { L"-igfxblt", L"backlight fix alternative, KBL/CFL on macOS 13.4+" },
+    { L"-igfxbls", L"smoother brightness transitions, IVB and newer" },
+    { L"-igfxnotelemetryload", L"skip iGPU telemetry (startup freeze on some laptops)" },
+    { L"igfxonln=1", L"force online status on all displays" },
+    { L"igfxfw=2", L"force loading of the Apple GuC firmware" },
+    { L"-igfxmlr", L"maximum link rate fix" },
+    { L"-igfxmpc", L"raise the max pixel clock" },
+    { L"-cdfon", L"HDMI 2.0 patches (not implemented for macOS 11+)" },
+    { L"-radcodec", L"hardware video encoder on spoofed AMD GPUs" },
+    { L"radpg=15", L"power-gating modes off, AMD Cape Verde GPUs" },
+    { L"unfairgva=1", L"hardware DRM on supported AMD GPUs" },
+    { L"nvda_drv_vrl=1", L"NVIDIA Web Drivers, macOS Sierra and High Sierra" },
+    { L"-liluoff", L"disable Lilu (and with it its plugins)" },
+    { L"-lilubetaall", L"Lilu and all plugins on unsupported OS versions" },
+    { L"-liludbgall", L"debug printing, DEBUG kexts only" },
+    { L"-revoff", L"disable RestrictEvents" },
+    { L"revpatch=sbvmm", L"VMM model so OTA updates work on unsupported models" },
+    { L"-brcmfxoff", L"disable AirportBrcmFixup" },
+    { L"brcmfx-country=#a", L"Broadcom Wi-Fi country code #a" },
+    { L"-nvmefoff", L"disable NVMeFix" }
   };
   CONST CHAR16         *Names[ARRAY_SIZE (Common)];
-  CHAR16               Lines[ARRAY_SIZE (Common)][32];
+  CHAR16               Lines[ARRAY_SIZE (Common)][112];
   UINTN                Index;
   INTN                 Choice;
 
@@ -2689,9 +2720,10 @@ UiArgsList (
       UnicodeSPrint (
         Lines[Index],
         sizeof (Lines[Index]),
-        L"[%s] %s",
-        ArgsFind (Context->EditArgs, Common[Index], NULL) ? L"x" : L" ",
-        Common[Index]
+        L"[%s] %-21s %s",
+        ArgsFind (Context->EditArgs, Common[Index][0], NULL) ? L"x" : L" ",
+        Common[Index][0],
+        Common[Index][1]
         );
       Names[Index] = Lines[Index];
     }
@@ -2701,7 +2733,7 @@ UiArgsList (
       return;
     }
 
-    ArgsToggle (Context->EditArgs, Common[Choice]);
+    ArgsToggle (Context->EditArgs, Common[Choice][0]);
   }
 }
 
