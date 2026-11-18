@@ -1,0 +1,42 @@
+B00tGeni3 Phase 7b - the 0.8g tool with a signed vault (QEMU + OVMF, OpenCore 1.0.8). Bench images only.
+Date 2026-11-17. macOS build host. Tool 0.8g sha256 22133f1456e2ba2ec09aee703b3808d3a5030a107949ab084f93b9b1d2792db9
+(source src/history/B00tGeni3-phase8g-v0.8g.c, diff phase7/patch-8g.diff, build log src/build-module-phase8g.log rc 0).
+Master bench/ESP-vault re-signed after the 0.8g build (vault-sign.py sign + check OK). Tampered sets from
+phase7/make-tamper.sh: the same bytes go into the variant folder (tool test) and live into EFI\OC (OpenCore test).
+Key: phase7/bench-test-key-THROWAWAY (bench only).
+
+Runs: bench/logs/20261117-232834-vault-tool-gate.txt (refuse, swap, oc, gap) and a second run of part commit
+(phase7/vault-tool-gate.sh commit). Failed checks: 0 in both. Screenshots phase7/shots/7b-*.png.
+
+1. TOOL REFUSES TAMPERED SETS (refuse)          shots 7b-refuse-main.png, 7b-reasons-stack.png
+   list: known-good PASS (ACTIVE), s1..s4 REFUSED, test1 PASS
+   s1-edited      known-good + one boot-arg, known-good's set   -> "the vault was made for a different config.plist"
+   s2-wrongkey    test1 set, signature from a second key        -> "the set's signature does not match the key in OpenCore.efi"
+   s3-notinvault  test1, vault without Drivers\OpenRuntime.efi  -> "on disk, not in the vault: Drivers\OpenRuntime.efi"
+   s4-unsigned    test1, no set                                 -> "no signed vault set for this config ... OpenCore would stop"
+   Host after the run: fsck clean, config.plist / vault.plist / vault.sig still known-good's, no backup, no leftovers.
+2. COMMIT LOCK (commit)                          shot 7b-commit-stack.png
+   boot-arg line edited (-x added), COMMIT -> pre-flight of the edited copy: "no signed vault set ...",
+   "REFUSED: the edited copy fails the pre-flight. Nothing was changed." Host: nothing written.
+   APPLY & REBOOT uses the same function (UiSaveArgs) and pre-flight; not run separately.
+3. SWAP ROUND TRIP (swap), key-patched DEBUG OpenCore.efi so the serial log covers the reset
+   known-good -> test1: pre-flight OK ("176 entries, 175 files on disk compared"); OpenCore reached the picker
+   before and after the reset, 0 OCST/OCS/OC failure lines; host: fsck clean, config.plist = test1,
+   vault.plist = test1.vault, vault.sig = test1.vsig, backups = known-good's 3 files, active.txt test1.plist,
+   no leftovers.
+   test1 -> known-good: same checks, all files back to known-good's set, backups = test1's set.
+4. OPENCORE REFUSES THE SAME SETS PLACED LIVE (oc), DEBUG serial lines, no picker:
+   s1  OCST: Aborting corrupted config.plist file access / OC: Failed to load configuration!
+   s2  OCST: Invalid vault signature / OC: Failed to open root FS - Security Violation!
+   s3  OCST: Aborting Drivers\OpenRuntime.efi file access not present in vault
+   s4  OCST: Aborting corrupted config.plist file access
+5. UNSIGNED-ESP GAP (gap): plain bench ESP (no key, Vault Optional) + an OC\vault.plist made for its config.
+   test1 (no set) refused: "vault: Optional, key: no, OC\vault.plist: yes, set: none - no signed vault set".
+   0.8f only checked Vault == Optional and would have swapped; OpenCore would then stop on the config hash.
+
+NOT DONE / OPEN
+   - Power cut during the 3-file rename window (oTR-DaRkNeSs accepted the risk; a short demo series is still owed).
+   - Plain-bench regression (non-vault swaps on 0.8g) not yet rerun.
+   - Real hardware: none.
+   - Note: the pre-flight hashes every file under EFI\OC once per tool start (175 files on the bench, no
+     noticeable delay in QEMU); time on real firmware not measured.
