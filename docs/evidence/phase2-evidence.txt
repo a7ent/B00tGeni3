@@ -1,0 +1,32 @@
+B00tGeni3 Phase 2 (hello tool) gate evidence - macOS build host - 2026-11-14 15:52
+Source tree: src/OpenCorePkg-1.0.8-b00tgeni3 (APFS clone of phase0 OpenCorePkg 1.0.8, UDK b47f86e)
+Changes vs tag 1.0.8:
+ M OpenCorePkg.dsc
+?? Application/B00tGeni3/
+ OpenCorePkg.dsc | 1 +
+ 1 file changed, 1 insertion(+)
+Build: OFFLINE_MODE=1 ./build_oc.tool (unchanged), log src/build_oc-b00tgeni3-phase2.log
+Gate run 20261114-154832: bench.sh --headless 35 --debug --steps key:ret,wait:6,shot:tool,key:spc,wait:6,shot:back
+  picker.png: B00tGeni3 listed first (selected); tool.png: Device/File/Full paths on HD(1,GPT,...)/EFI\OC\Tools\B00tGeni3.efi + 'Press any key'; back.png: picker again
+  serial:
+36:118 00:009 OCB: Should boot from 1. B00tGeni3 (T:128|F:0|G:0|E:0|DEF:0)
+44:423 08:119 OCB: Restored mode 0/0/29(29) - Success
+44:511 00:001 OCB: Showing menu... 
+Earlier run 20261114-153613 (TextMode=false): tool ran and waited 8.3s for key but output invisible -> TextMode=true
+3359b6dd4e13ed65e4bae39dba145563d2f22676e557949b9e01200481d030c1  src/OpenCorePkg-1.0.8-b00tgeni3/Application/B00tGeni3/B00tGeni3.c
+5157a8f26e871bb9fb8642ac7bafdad925cb48478889bf60de53abccb5d6e0ee  src/OpenCorePkg-1.0.8-b00tgeni3/Application/B00tGeni3/B00tGeni3.inf
+4d19badac6d447f725b95c4691118d7ba882c4a3fe4e3fd1433e0aea5320a485  src/OpenCorePkg-1.0.8-b00tgeni3/UDK/Build/OpenCorePkg/DEBUG_XCODE5/X64/B00tGeni3.efi
+c2174c47c0065e4944112152682445a3ef40030ddfca896ea234bff5fd4fd94c  src/OpenCorePkg-1.0.8-b00tgeni3/UDK/Build/OpenCorePkg/NOOPT_XCODE5/X64/B00tGeni3.efi
+202be87f773fecb2a1ea6d0c8cca4fd05db70ffd8e8a0702ac195c80efef5214  src/OpenCorePkg-1.0.8-b00tgeni3/UDK/Build/OpenCorePkg/RELEASE_XCODE5/X64/B00tGeni3.efi
+202be87f773fecb2a1ea6d0c8cca4fd05db70ffd8e8a0702ac195c80efef5214  bench/ESP/EFI/OC/Tools/B00tGeni3.efi
+b10e766b391521719b8d2bc727a6c063906023c873f50a62a045f0b130f9f50a  bench/ESP/EFI/OC/config.plist
+1987adaf70da4c8b19065071ebc0331e260bdb3b178a0ca4db5510ccd277898d  bench/logs/20261114-154832-back.png
+1987adaf70da4c8b19065071ebc0331e260bdb3b178a0ca4db5510ccd277898d  bench/logs/20261114-154832-picker.png
+81ee0d849619d32a28f86dd9e7c3b14a4363a2f01c9406948f1c68389e8cf392  bench/logs/20261114-154832-qemu.log
+a2221c655391818f19fda83c29fc6123710d997906445b2525eec4da911891b7  bench/logs/20261114-154832-serial.log
+493e4830399a467c31227bb6ef89548df06dd1ade448a316a7143d3b0a658f81  bench/logs/20261114-154832-tool.png
+
+Full build finished: [INFO] exit=0 end Sat Nov 14 15:56:12 PST 2026  warnings=0  log lines=1749
+4764466bdcfffc5c81f96b12a61ae7e6a7766dc3a432502b8dcb59951b1d4f2b  src/OpenCorePkg-1.0.8-b00tgeni3/UDK/Build/OpenCorePkg/DEBUG_XCODE5/IA32/B00tGeni3.efi
+3c3e23e626a0eb92a1be2532aa5ae57825b26848c3d00418c6a94a9f78241575  src/OpenCorePkg-1.0.8-b00tgeni3/UDK/Build/OpenCorePkg/NOOPT_XCODE5/IA32/B00tGeni3.efi
+c4ea644a88a142750582d30ee7bb8bff0d9cb208e68ecab4eaf14401412c83b9  src/OpenCorePkg-1.0.8-b00tgeni3/UDK/Build/OpenCorePkg/RELEASE_XCODE5/IA32/B00tGeni3.efi

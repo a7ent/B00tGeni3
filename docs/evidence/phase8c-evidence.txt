@@ -1,0 +1,63 @@
+B00tGeni3 Phase 8c evidence - screen sections
+Date: 2026-11-15. Machine: macOS 12.7.6 build host. Bench: QEMU 11.1.1, OVMF, OpenCore 1.0.8 RELEASE.
+All runs on the bench disk image only. No EFI partition touched, nothing pushed.
+
+TOOL
+  0.8c build 1  sha256 17b681e4a1d9d91a81c2983b86d1d97a130bfa329b6069d4e03c09147fbcfa16  (runs 1-5 below)
+  0.8c build 2  sha256 86017399f05487f45ebcd3778c3d90ef3cde21fa88fba2fbe8b0fe21fd6394f3  (run 6; staged now)
+  Build 2 changes one function, UiPrintWarning (red warning lines now end with CR+LF).
+  Both are module-only builds (src/build-module-phase8c.log, -2.log; exit 0, 0 warnings). No full
+  build_oc.tool build was done for 0.8c.
+
+RUNS (screenshots in bench/logs/, prefix = run stamp; review crops in phase8/evidence-8c/view/)
+  1  20261115-212853  1920x1080  tour, full layout
+  2  20261115-213853  1920x1080  LOAD-ALTERNATE swap
+  3  20261115-214023  1920x1080  RESTORE-FAILSAFE
+  4  20261115-214135  1920x1080  NVRAM-RESET
+  5  20261115-214304  1024x768   tour, compact layout
+  6  20261115-215706  1920x1080  build 2 check of the NVRAM-RESET page
+
+RESULTS (each checked by looking at the screenshot named)
+  System info row            p8c-main: boot device "SATA p1 GPT", MAC "n/a", serial W00000000001,
+                             SIP 0x00000000, boot-args "-v keepsyms=1"
+  LOAD-ALTERNATE             p8c-load-list: lists known-good.plist and test1.plist
+                             p8c-load-preflight: pre-flight OK, confirm page defaults to NO
+                             p8c-load-after-reset: picker after the cold reset
+                             p8c-load-already-active: tool then reports "test1.plist is already active"
+  RESTORE-FAILSAFE           p8c-restore-preflight: pre-flight of known-good.plist OK, confirm page
+                             p8c-restore-after-reset: picker after the cold reset
+  KEXT CONTROL               p8c-kext: "KEXT CONTROL - coming soon" in red
+  NVRAM-RESET                p8c-nvram-confirm, p8c-nvram-tool: CleanNvram.efi "NVRAM cleanup completed",
+                             returned Success, cold reset; p8c-nvram-after: picker
+  DISABLE SIP - ENABLE SIP   p8c-sip-confirm, p8c-sip-tool: CsrUtil.efi "toggled to disabled (0x27F)"
+                             p8c-sip-done: returned Success; p8c-sip-main: info row shows 0x0000027F
+                             p8c-discard-picker: picker entry reads "Toggle SIP (Disabled)"
+  UEFI SHELL                 p8c-shell: OpenShell prompt; p8c-shell-back: main screen after "exit"
+  DUMP-DISKMAP               p8c-diskmap: 2 block devices with device paths, the ESP marked
+  DUMP SSDT                  p8c-ssdt: 10 tables, 9292 bytes, in EFI\OC\B00tGeni3\ACPI-20261116-052954
+  DISCARD CHANGES AND EXIT   p8c-discard-sel, p8c-discard-picker: back at the picker
+  Compact layout (1024x768)  p8c-c-main, -c-diskmap, -c-ssdt, -c-sip-tool, -c-main-after, -c-shell,
+                             -c-discard-sel, -c-picker: same results, hint on the status line
+
+BUG FOUND AND FIXED
+  The line after a red warning started at the column where the warning ended (run 4,
+  p8c-nvram-confirm). Cause: "\n" inside a %s argument is not turned into CR+LF by Print.
+  Fixed in build 2; p8c-b2-nvram-confirm shows the page correct.
+
+DEVIATION FROM THE SPEC
+  The spec names ResetNvramEntry and ToggleSipEntry. In 1.0.8 those are drivers that register picker
+  entries and need the picker's context, so they cannot be started as tools. The tool starts
+  CleanNvram.efi, CsrUtil.efi (argument "toggle") and OpenShell.efi with LoadImage/StartImage.
+  CleanNvram.efi does not preserve firmware boot entries; the confirm page says so.
+
+NOT TESTED / NOT VERIFIED
+  - MAC address from SimpleNetwork: the bench has no network card, so only the "n/a" path ran.
+  - A variant the pre-flight refuses (REFUSED path) through the new screen. The check itself is the
+    unchanged Phase 5 code.
+  - The dumped ACPI files and the swapped config were not read back from the image on the host in
+    this phase; the evidence is what the tool shows on screen.
+  - The ACPI folder time (05:29 on the 16th) is the VM clock in UTC, not local time.
+  - Runs 1-5 used build 1. With build 2 only the main screen and the NVRAM-RESET page were rerun.
+  - 1024x768: a small mark shows inside the banner near the word MISSING (p8c-c-discard-sel). Cause
+    not verified.
+  - UI scale 2, real hardware.

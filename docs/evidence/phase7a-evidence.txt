@@ -1,0 +1,24 @@
+B00tGeni3 Phase 7a - OpenCore enforces the signed vault on the bench (no tool changes)
+Date 2026-11-17. macOS build host. QEMU + OVMF, OpenCore 1.0.8. Bench images only.
+
+Setup
+  bench/ESP-vault: copy of bench/ESP; config.plist, known-good.plist, test1.plist set to Vault Secure (ocvalidate rc 0).
+  Key: phase7/bench-test-key-THROWAWAY (bench only, NOT oTR-DaRkNeSs's key). pub528 bytes cross-checked == RsaTool -pub output.
+  RELEASE OpenCore.efi key-patched copy sha256 763eaff8432d4123f2575723dea41c1d0b01620c6bdd25c87f4dc2f386fe32f0
+  DEBUG copy phase7/OpenCore-DEBUG-benchkey.efi sha256 472535028a963f7eddd1edb5e01f12c61845beaa9531a908250c1e473b96cb44
+  Signed with phase7/tools/vault-sign.py sign (176 files per vault, B00tGeni3\ excluded); host check OK for all 3 sets.
+  bench.sh: new --esp, --oc-debug, --overlay, --remove (backup bench.sh.pre-vault.bak).
+
+Run bench/logs/20261117-223242-vault-oc-gate.txt (phase7/vault-oc-gate.sh): 7/7 PASS
+  good-release          picker                       shots/7a-good-release.png
+  good-debug            picker, "OCB: Showing menu", no OCST errors
+  t1 config edited      HALT  OCST: Aborting corrupted config.plist file access / OC: Failed to load configuration!
+  t2 wrong-key sig      HALT  OCST: Invalid vault signature / OC: Failed to open root FS - Security Violation!
+  t3 vault.sig removed  HALT  OCS: Missing vault signature
+  t4 driver not in vault HALT OCST: Aborting Drivers\OpenRuntime.efi file access not present in vault
+  t5 no vault at all    HALT  OCS: Missing vault signature
+  Screenshots phase7/shots/7a-*.png (halts show OpenCore's own log text, then nothing).
+First run 20261117-214913 reported 6 FAIL: my script's log lookup bug (matched two "serial log" lines) plus one
+monitor-socket glitch; the serial logs of that run show the same OpenCore lines. Fixed, rerun above.
+
+GUI drafts for vault (no code): phase8/drafts/draft-V1.png (signed variant), draft-V1b.png (stale variant).

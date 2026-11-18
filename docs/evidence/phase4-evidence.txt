@@ -1,0 +1,48 @@
+B00tGeni3 Phase 4 evidence - menu and swap
+Machine: macOS 12.7.6 build host. QEMU 11.1.1 + OVMF, DEBUG OpenCore 1.0.8. Date: 2026-11-14.
+
+RESULT: 3 swaps (known-good -> test1 -> known-good -> test1), all hashes match. PARTIAL against the plan.
+  Plan gate = 5 round trips (10 swaps). oTR-DaRkNeSs reduced it to 3 swaps for now ("do three total for now"),
+  with harder testing to follow. The 10-swap run is still OPEN.
+
+Tool: B00tGeni3 0.4.1
+  efi    sha256 c79954e89268827036c90683a4c8bb6e42c6d13c355f7559f7bf2a6d4ec89eaa  (bench/run/B00tGeni3-phase4-RELEASE-X64.efi)
+  source sha256 0456cbcfbe5e672d8ef31538e77bcacabc90bafd014ff28de35e111ec0a9f7bd  (src/history/B00tGeni3-phase4-v0.4.1.c)
+  build log src/build_oc-b00tgeni3-phase4-v0.4.1.log - exit 0, 0 compiler "warning:" lines
+Variants: known-good.plist b10e766b391521719b8d2bc727a6c063906023c873f50a62a045f0b130f9f50a
+          test1.plist      e25ca6a8327a09bcb4ecbf6d8ba951fb7c64c802952d482d47f878d2b5faf942
+
+Gate report: bench/logs/20261114-214702-phase4-gate.txt (fresh image, each swap its own QEMU session)
+  Host check after every swap, image attached read-only: fsck_msdos clean, config.plist == chosen variant,
+  B00tGeni3\config.plist.bak == previous config, active.txt == chosen name, no config.tmp/config.old/*.tmp left.
+  swap 1 -> test1.plist       config e25ca6a8  bak b10e766b  OK
+  swap 2 -> known-good.plist  config b10e766b  bak e25ca6a8  OK   (this swap failed before the fix)
+  swap 3 -> test1.plist       config e25ca6a8  bak b10e766b  OK
+  Harness retries: 0. Run stopped on purpose before swap 4 sent keys; the PASS line in the report is the
+  exit trap firing on the kill, see the notes appended to the report.
+  Screenshots: bench/logs/20261114-21*-swap{1,2,3}-{menu,switching,after}.png
+
+Bug found and fixed in this phase
+  Symptom: second swap failed, "Access Denied". Every File->Delete from the tool returned Success, deleted nothing.
+  Cause (read in source, then confirmed at runtime): OpenCore's OcVirtualFsLib hooks gBS->HandleProtocol and
+    LocateProtocol (Library/OcVirtualFsLib/VirtualFs.c:116-117, enabled from OcMainLib/OpenCoreKernel.c:1542).
+    Files opened through that wrapped file system get VirtualFileDelete, which calls Close, not Delete
+    (Library/OcVirtualFsLib/VirtualFile.c:141).
+  Fix: the tool gets EFI_SIMPLE_FILE_SYSTEM_PROTOCOL with gBS->OpenProtocol(..., GET_PROTOCOL), which is not hooked.
+  Before: bench/logs/20261114-183455-fstest2.png - 6 control cases, all "delete Success" then file still present.
+  After:  bench/logs/20261114-213359-fstest3.png - same 6 cases, all reopen = Not Found; host raw dump shows
+          PRE.TMP and PLAIN.TMP as deleted entries.
+  Not verified: that OpenShell's rm worked because the shell uses OpenProtocol (shell source not read).
+
+Earlier invalid run, kept: bench/logs/20261114-213942-phase4-gate-INVALID-harness.txt
+  Swaps 1-2 OK; in swap 3's session the QEMU monitor socket never answered (no keys, no screenshots, tool not run).
+  Cause of that socket failure not verified. phase4-gate.sh now retries such a swap once and prints the count.
+
+Open items
+  - 10-swap gate not run to completion.
+  - Harder testing (oTR-DaRkNeSs to define).
+  - Monitor-socket failure seen once, cause unknown.
+
+GATE DECISION (oTR-DaRkNeSs, 2026-11-14): Phase 4 accepted on oTR-DaRkNeSs's directive.
+  oTR-DaRkNeSs also swapped about 5 times by hand in a window run and reported it working (not hash-checked from the host).
+  Fault testing (10-swap run, power-cut, bad inputs) is deferred to later by oTR-DaRkNeSs. Still open, not done.

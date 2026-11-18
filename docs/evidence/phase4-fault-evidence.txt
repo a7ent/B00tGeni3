@@ -1,0 +1,72 @@
+B00tGeni3 fault testing (Phase 4 items oTR-DaRkNeSs deferred on 2026-11-14, approved 2026-11-16)
+Date: 2026-11-16/17. Machine: macOS 12.7.6 build host. Bench: QEMU 11.1.1, OVMF, OpenCore 1.0.8 RELEASE.
+Bench disk images only. No EFI partition touched, nothing pushed, no 2025 code used.
+
+HARNESS
+  bench/fault-gate.sh (new): modes swaps N | powercut "ms list" | recover STAMP. Host check after every run with
+  the image attached read-only: fsck_msdos -n, sha256 of config.plist and B00tGeni3\config.plist.bak,
+  active.txt, leftover config.tmp / config.old / config.bak.tmp / active.tmp.
+  bench/bench.sh: two new steps, msleep:<ms> and kill (SIGKILL of QEMU = power cut). Pre-change copy
+  bench/bench.sh.pre-fault.bak.
+
+1. TEN SWAPS (plan gate: 5 round trips)  - PASS
+  0.8e, report bench/logs/20261116-162644-fault-swaps.txt: 10/10, harness retries 0. After every swap: fsck
+  clean, config.plist == chosen variant, backup == previous config, active.txt == chosen name, no leftovers.
+  0.8f regression: bench/logs/20261117-165008-fault-swaps.txt, 2/2.
+
+2. BAD INPUTS  - PASS after one fix (0.8f)
+  Variants in bench/fault-variants: a-empty (0 bytes), b-garbage (4 KB random), c-truncated (first 20000 bytes
+  of known-good), d-notconfig (valid plist, {hello: world}), e-vault-secure (known-good with Vault Secure),
+  f-missing-kext (enabled kext that is not on disk), g-oversize (known-good + 20 MB comment).
+  BUG on 0.8e (run 20261116-202136, bench/logs/...-bad-main.png): g-oversize -> "Cannot read g-oversize.plist -
+    Bad Buffer Size", then "No variants found" and the tool only offers to return to OpenCore. One file over
+    1 MB hid every variant, known-good and RESTORE-FAILSAFE included. config.plist untouched, fsck clean.
+  FIX 0.8f (phase4-fault/tools/patch-8f.py; sha256 9bcae5103ac5a5ce064c8d0cd1f5fa48ba11a6857ad99825f9650458261c3b25;
+    source src/history/B00tGeni3-phase8f-v0.8f.c; build log src/build-module-phase8f.log, exit 0):
+    an unreadable variant stays in the list and its pre-flight refuses it with the read status; a directory
+    read error after some variants loaded keeps those instead of dropping all.
+  0.8f run 20261117-162249: all 9 variants listed, scrolling past 5 works; each bad one refused, reason shown
+    (phase4-fault/bad3-results.png, bad3-list.png):
+      a, b, c  not a valid plist: OpenCore's parser rejects it
+      d        ShowPicker false, Vault Secure, B00tGeni3.efi not in Misc > Tools (4 reasons)
+      e        Vault is Secure: needs Optional
+      f        missing file NoSuch.kext Info.plist and binary
+      g        cannot read the file: Bad Buffer Size (larger than 1 MB)
+  Earlier 0.8e run without g: 20261117-153942 (phase4-fault/bad2-*.png), same reasons.
+
+3. POWER CUT DURING A SWAP
+  Series 1 (0.8e, 20261116-164052-fault-powercut.txt): 8 cuts at 0..700 ms on ONE image, damage accumulating.
+    config.plist was a whole variant after every cut. From the 2nd cut fsck reported problems; by the end the
+    EFI\OC\B00tGeni3 folder could not be listed on the host (I/O error) and the tool no longer started.
+    OpenCore still reached the picker (cut8 reboot shot). Cause read from the 0.8e source: any directory or
+    file read error dropped every variant (fixed in 0.8f, see 2). Not rerun on 0.8f.
+  Series 2 (0.8e, 20261116-194843-fault-powercut.txt): 9 cuts, 5..45 ms, a FRESH image for each cut.
+    Images kept as bench/run/cut-20261116-194843-<ms>ms.cdr.
+      ms  config.plist  fsck        leftovers                 notes
+       5  old (kg)      clean       B00tGeni3\config.bak.tmp  backup step cut
+      10  old (kg)      PROBLEMS    OC\config.tmp             116 orphan clusters
+      15  new (test1)   clean       OC\config.old             active.txt missing
+      20  new (test1)   PROBLEMS    B00tGeni3\active.tmp      junk directory entries in EFI\OC\B00tGeni3
+      25  new           clean       none                      complete
+      30  new           clean       none                      complete
+      35  new           clean       none                      complete
+      40  new           clean       B00tGeni3\active.tmp      active.txt missing
+      45  new           clean       none                      complete
+    config.plist was a whole known file (old or new) after 9/9 cuts; 5/9 fully clean.
+    After every cut OpenCore reached the picker and the tool started (cut<n>-<ms>ms-reboot.png). At 20 ms the
+    tool listed both variants PASS and showed test1 ACTIVE; known-good, test1 and config.plist.bak still had
+    the right hashes; the junk entries are extra directory entries holding old plist text.
+  Recovery (bench/logs/20261117-165329-fault-recover.txt): one swap on each of the 9 cut images: 9/9 swapped,
+    all leftover temp files gone afterwards. fsck PROBLEMS stay on the 10 ms and 20 ms images (the tool does
+    not repair FAT; the swap itself still worked). The cut images still carry 0.8e.
+
+RESIDUAL RISKS (not fixed, oTR-DaRkNeSs to decide)
+  - A cut can leave FAT damage (orphan clusters, junk entries) in EFI\OC or EFI\OC\B00tGeni3. On a Mac the fix
+    is Disk Utility First Aid or fsck_msdos on the ESP. The tool does not check or repair the file system.
+  - The backup and active.txt are written into the folder that holds known-good, so damage from a cut lands
+    next to the failsafe. Options: move those writes to a subfolder, and/or show a red "last swap was
+    interrupted" warning when leftover temp files exist. Neither built.
+  - Repeated swaps on an already damaged FAT (series 1) ended with the variant folder unreadable. With 0.8f
+    the tool would keep any variants it could read, but a folder that cannot be listed at all still leaves
+    nothing to pick; OpenCore itself kept booting.
+  - Firmware FAT drivers differ; all of this is OVMF's. Real hardware not tested.

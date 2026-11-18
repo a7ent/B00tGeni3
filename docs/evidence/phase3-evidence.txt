@@ -1,0 +1,30 @@
+B00tGeni3 Phase 3 (write + reboot proof) gate evidence - macOS build host - 2026-11-14 16:12
+Tool: Application/B00tGeni3/B00tGeni3.c v0.3, RELEASE X64, build log src/build_oc-b00tgeni3-phase3.log (exit=0, warnings=0)
+Gate run 20261114-160809: bench.sh --headless 35 --debug --steps key:ret,wait:8,shot:tool,key:spc,wait:35,shot:after-reset
+  tool.png: Write test.tmp 4096 B / Verify / Rename -> test.bin / Verify test.bin - all Success; WRITE TEST PASSED
+  serial: firmware boot count 2, OpenCore start count 2 (2 = cold reset rebooted into OpenCore)
+    2:BdsDxe: starting Boot0001 "UEFI QEMU HARDDISK QM00013 " from PciRoot(0x0)/Pci(0x2,0x0)/Sata(0x0,0x
+    487:01:831 00:015 OCB: Showing menu... 
+    496:37:933 00:010 OCB: Should boot from 1. B00tGeni3 (T:128|F:0|G:0|E:0|DEF:0)
+    512:BdsDxe: starting Boot0001 "UEFI QEMU HARDDISK QM00013 " from PciRoot(0x0)/Pci(0x2,0x0)/Sata(0x0,
+    997:01:481 00:012 OCB: Showing menu... 
+  after-reset.png: OpenCanopy picker again
+Host check (QEMU exited; image attached read-only): logs/20261114-160809-host-verify.log
+    [INFO] expected test.bin sha256: 252fffd8c4cb5765952319e99769b43f94ea85d8b54baf6521e9a1e7285aafbc
+    [INFO] fsck_msdos: clean
+    [INFO] test.bin size 4096 sha256 252fffd8c4cb5765952319e99769b43f94ea85d8b54baf6521e9a1e7285aafbc
+    [INFO] PHASE 3 HOST CHECK: PASS
+Note: oTR-DaRkNeSs's window bench (pid 51201, started 15:58) was still open during this run and shared bench/run; result unaffected
+  (QEMU 51201 kept the old unlinked esp.cdr); bench.sh now refuses to start while run/ files are open (lsof).
+f3d110577b27c3fff56518d25011a450e6f03f72e5ba51d30455a755a150809d  src/OpenCorePkg-1.0.8-b00tgeni3/Application/B00tGeni3/B00tGeni3.c
+f9c8ec0e45dce371f75f6fed53142d85a3217199adcc304530bba1674afbc78f  src/OpenCorePkg-1.0.8-b00tgeni3/Application/B00tGeni3/B00tGeni3.inf
+d36080cc1edbdaf5554d17baa98ad92d035622b0106fa4cd678d9c470c514ec0  src/OpenCorePkg-1.0.8-b00tgeni3/UDK/Build/OpenCorePkg/RELEASE_XCODE5/X64/B00tGeni3.efi
+3d8bbc822272ff7e3c899c84c2ea2a7cf311936eea18994554e26594f0803918  bench/run/esp.cdr
+7e88069fa4111a6a63add40ee06f1c27abc7f7c5321e114196c062e36a646c62  bench/bench.sh
+5bab3982d22c2aed3103083804a6d7fac6c675ee4fca38703ae3ed5cd3b18d27  bench/phase3-verify.sh
+1987adaf70da4c8b19065071ebc0331e260bdb3b178a0ca4db5510ccd277898d  bench/logs/20261114-160809-after-reset.png
+44d80a217b0fa7c8f3cf248ec7fe7bb47a0748afb98f276d5b465034c9d6d3ab  bench/logs/20261114-160809-host-verify.log
+1987adaf70da4c8b19065071ebc0331e260bdb3b178a0ca4db5510ccd277898d  bench/logs/20261114-160809-picker.png
+81ee0d849619d32a28f86dd9e7c3b14a4363a2f01c9406948f1c68389e8cf392  bench/logs/20261114-160809-qemu.log
+c515ccbd6a4cb201db37920abe4cf47336f015c87a46431514919e68b594bbab  bench/logs/20261114-160809-serial.log
+1fe00b3a109c5f712468499ad81ccde3683b9aa7f9213a9ee74baa23cbff83c2  bench/logs/20261114-160809-tool.png

@@ -1,0 +1,60 @@
+B00tGeni3 Phase 1 bench - config.plist changes vs OpenCorePkg 1.0.8 Docs/Sample.plist
+Original kept at: bench/run/config.plist.sample-original
+
+Plan changes (Phase 1 step 2):
+  Misc:Security:Vault             Secure   -> Optional
+  Misc:Security:SecureBootModel   Default  -> Disabled
+  Misc:Boot:ShowPicker            true     -> true (already true in Sample)
+
+Bench-only changes beyond the plan (why):
+  Misc:Tools:0 (OpenShell.efi) Enabled    false -> true   gate needs OpenShell under Tools
+  Misc:Tools:0 (OpenShell.efi) Auxiliary  true  -> false  HideAuxiliary=true would hide it until Space is pressed
+  Misc:Boot:Timeout               5 -> 0                   no auto-boot countdown during capture
+  Misc:Debug:Target               3 -> 11 (0x0B)           adds 0x08 serial port logging (Configuration.tex:4082)
+  Misc:Debug:DisplayLevel         0x80000002 -> 0x80000042 adds DEBUG_INFO (only effective in DEBUG/NOOPT builds)
+  UEFI:Drivers:8 (HfsPlus.efi)    Enabled true -> false    file not shipped in the OpenCore release zip
+
+Left unchanged on purpose:
+  Kernel:Add 0-3 (Lilu, VirtualSMC, WhateverGreen, AppleALC) enabled but not present - only used when booting macOS, after the picker
+  Misc:Serial:Init false - OVMF initialises the serial port itself
+
+GUI picker + extra entries (oTR-DaRkNeSs request, 2026-11-14 ~14:30). Pre-change copy: bench/run/config.plist.pre-gui
+  Misc:Boot:PickerMode            Builtin -> External      OpenCanopy graphical picker
+  Misc:Boot:HideAuxiliary         true -> false            show Reset NVRAM / Toggle SIP without pressing Space
+  UEFI:Drivers:9  OpenCanopy.efi       Enabled false -> true
+  UEFI:Drivers:47 ResetNvramEntry.efi  Enabled false -> true
+  UEFI:Drivers:48 ToggleSipEntry.efi   Enabled false -> true
+  Resources/Font, Image, Label copied from acidanthera/OcBinaryData commit 640e7e9240938f2529e725351e1e1150dc3569db
+    (clone: workspace/vendor/OcBinaryData). Audio not copied (PickerAudioAssist stays false).
+  OpenShell (Misc:Tools:0, "UEFI Shell") was already enabled in Phase 1.
+
+Phase 2 hello tool (2026-11-14 ~15:15). Pre-change copy: bench/run/config.plist.pre-phase2
+  Misc:Tools:0 NEW  B00tGeni3.efi  Name=B00tGeni3 Enabled=true Auxiliary=false RealPath=true TextMode=false Flavour=Auto
+    inserted first so it is the default picker selection (headless test presses Enter); OpenShell moves to Tools:1
+  ESP/EFI/OC/Tools/B00tGeni3.efi copied from workspace/src build (RELEASE X64), hash in phase2-evidence.txt
+  Misc:Tools:0 B00tGeni3 TextMode false -> true   tool text output was invisible in OpenCanopy graphics mode (run 20261114-153613)
+
+Phase 4 variants (2026-11-14 ~16:30) in ESP/EFI/OC/B00tGeni3/:
+  known-good.plist = live config.plist at this point (OpenCanopy GUI picker)
+  test1.plist      = known-good with Misc:Boot:PickerMode External -> Builtin (text picker; visible proof of a swap)
+  B00tGeni3 stays in Misc:Tools in both, so either can swap back.
+  test1.plist also: UEFI:Drivers:9 OpenCanopy.efi Enabled true -> false (ocvalidate: OpenCanopy loaded requires PickerMode External)
+  TEMP (fstest2 only): ESP/EFI/OC/B00tGeni3/ft0/pre.tmp scratch file - remove after control test
+  2026-11-14 21:4x: TEMP ft0/ removed from master ESP (control test done).
+  2026-11-14: Tools/B00tGeni3.efi = 0.4.1 (sha256 c79954e8...ec89eaa). Phase 4 fix: file system via OpenProtocol, not HandleProtocol.
+  2026-11-14 Phase 5: Kernel:Add Lilu/VirtualSMC/WhateverGreen/AppleALC Enabled true -> false in config.plist,
+    known-good.plist and test1.plist. Reason: Sample.plist ships them enabled but the bench ESP has no Kexts;
+    the Phase 5 pre-flight refuses a config whose referenced files are missing. Hashes of both variants changed.
+    Previous files: run/config.plist.pre-phase5, run/test1.plist.pre-phase5.
+  2026-11-15 Phase 8b: Tools/B00tGeni3.efi = 0.8b (sha256 c8ee2a41874b...). Mockup screen: text via ConOut, art via GOP Blt.
+  2026-11-15 Phase 8b build 2: Tools/B00tGeni3.efi = 0.8b (sha256 d82b4f1937a0...), logos drawn before text.
+  2026-11-15 Phase 8b build 3: Tools/B00tGeni3.efi = 0.8b (sha256 332489cbf17b...), small star hidden in compact layout.
+  2026-11-15 Phase 8c build 1 (module-only build): Tools/B00tGeni3.efi = 0.8c (sha256 17b681e4a1d9...). Mockup screen wired up.
+  2026-11-15 Phase 8c build 2 (module-only build): Tools/B00tGeni3.efi = 0.8c (sha256 86017399f054...), warning lines end with CR+LF. Build 1 kept at run/B00tGeni3-phase8c-build1-RELEASE-X64.efi.
+  2026-11-15 Phase 8d build 1 (module-only build): Tools/B00tGeni3.efi = 0.8d (sha256 5ca3488f8038...). Draft A2 screen + boot-args editing. 0.8c build 2 kept at run/B00tGeni3-phase8c-RELEASE-X64.efi.
+  2026-11-16 Phase 8d build 2 (module-only build): Tools/B00tGeni3.efi = 0.8d (sha256 f148792d8ff6...), info row boot-args value one cell narrower.
+  2026-11-16 Phase 8e build 1 (module-only build): Tools/B00tGeni3.efi = 0.8e (sha256 58de06fc92df...), ADDITIONAL-ARGS-LIST has 36 researched args with descriptions. NOT yet run on the bench. 0.8d build 2 kept at run/B00tGeni3-phase8d-RELEASE-X64.efi and in live-test/.
+
+2026-11-17 16:22  0.8f build 1 staged (sha256 9bcae5103ac5a5ce064c8d0cd1f5fa48ba11a6857ad99825f9650458261c3b25). Fault-test fix: unreadable variant stays listed and is refused; dir read error keeps loaded variants. Patch phase4-fault/tools/patch-8f.py on 0.8e.
+
+2026-11-17 23:05 0.8g (Phase 7 vault): sha256 22133f1456e2ba2ec09aee703b3808d3a5030a107949ab084f93b9b1d2792db9, log src/build-module-phase8g.log rc 0. Vault set NAME.vault/NAME.vsig per variant; pre-flight checks key in OpenCore.efi, OC\vault.plist, signature, every file under OC; swap writes config+vault.plist+vault.sig with backups and roll-back. Staged in bench/ESP and bench/ESP-vault Tools. Diff phase7/patch-8g.diff.

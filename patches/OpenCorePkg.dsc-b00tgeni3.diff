@@ -1,0 +1,10 @@
+--- ../phase0/OpenCorePkg-1.0.8/OpenCorePkg.dsc	2026-11-14 11:48:11.000000000 -0800
++++ OpenCorePkg-1.0.8-b00tgeni3/OpenCorePkg.dsc	2026-11-14 15:22:30.000000000 -0800
+@@ -234,6 +234,7 @@
+   }
+   OpenCorePkg/Application/PavpProvision/PavpProvision.inf
+   OpenCorePkg/Application/ResetSystem/ResetSystem.inf
++  OpenCorePkg/Application/B00tGeni3/B00tGeni3.inf
+   OpenCorePkg/Application/RtcRw/RtcRw.inf
+   OpenCorePkg/Application/TpmInfo/TpmInfo.inf
+   OpenCorePkg/Application/VerifyMemOpt/VerifyMemOpt.inf {

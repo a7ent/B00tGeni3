@@ -1,0 +1,52 @@
+B00tGeni3 Phase 8a evidence - glyph and size test
+Machine: macOS 12.7.6 build host. QEMU 11.1.1 + OVMF, DEBUG OpenCore 1.0.8,
+UEFI > Output > TextRenderer = BuiltinGraphics, tool entry TextMode = true. Date: 2026-11-15.
+
+RESULT: GATE PASSED - screenshots at both resolutions, and the renders / does-not-render list below.
+
+Tool: B00tGeni3 0.8a (glyph test on the hidden G key; nothing else changed since 0.5)
+  efi    sha256 f7f3e26b0d2370e8dea24f98b709224139344c588b7c738e01f968eeaf2ae951  (bench/run/B00tGeni3-phase8a-RELEASE-X64.efi)
+  source sha256 c35b54d513b279c496715abe0f7b74e4bd94bd78a5398be849365119365d0430  (src/history/B00tGeni3-phase8a-v0.8a.c)
+  build log src/build_oc-b00tgeni3-phase8a.log - exit 0, 0 "warning:" lines, 0 "error:" lines
+
+Screenshots (bench.sh --resolution sets Resolution in the image's config only)
+  bench/logs/20261115-031014-p8a-glyphs-1024x768.png    1024 x 768 px
+  bench/logs/20261115-031116-p8a-glyphs-1920x1080.png   1920 x 1080 px
+
+Console size reported by the tool on screen
+  1024 x 768   -> ConOut mode 0 of 1: 128 columns x 48 rows
+  1920 x 1080  -> ConOut mode 0 of 1: 240 columns x 67 rows
+  Cell is 8 x 16 px (Include/Acidanthera/Library/OcConsoleLib.h:49-50). No UI scaling at either size (UIScale 0).
+  The mockup is 56 lines: it fits at 1920x1080 (67 rows), NOT at 1024x768 (48 rows) -> compact layout needed there (8b).
+
+Glyphs that RENDER (same at both resolutions; read from the screenshots, agrees with the source)
+  ASCII U+0020-007E                 all
+  Arrows                            U+2190 U+2191 U+2192 U+2193
+  Box drawing (40 glyphs)           U+2500 2502 250C 2510 2514 2518 251C 2524 252C 2534 253C, U+2550-256C
+  Block elements                    U+2588 FULL BLOCK, U+2591 LIGHT SHADE
+  Geometric shapes                  U+25B2 up triangle, U+25BA right pointer, U+25BC down triangle, U+25C4 left pointer
+Glyphs that DO NOT render (drawn as the fallback "_")
+  U+2592 MEDIUM SHADE, U+2593 DARK SHADE, U+2620 SKULL AND CROSSBONES
+  Latin-1 U+00A0-00FF               ALL of it
+  Arrows U+2194-2199; every other box-drawing, block-element and geometric code point
+
+Source check, OpenCorePkg 1.0.8 (Library/OcConsoleLib)
+  ConsoleFont.c:499-507  font page table: page 0 (ASCII), page 1 (Latin-1) only "#if (ISO_FONT_MAX_PAGE == 2)",
+                         page 67 (arrows), page 74 (box drawing), page 75 (blocks + triangles)
+  OcConsoleLibInternal.h:27  #define ISO_FONT_MAX_PAGE 1   -> the Latin-1 page is compiled OUT in the stock build
+  ConsoleFont.c:427-432  page 75 glyphs: 2588, 2591, 25B2, 25BA, 25BC, 25C4
+  TextOutputBuiltin.c:158-162  unknown characters are drawn as OC_CONSOLE_FONT_FALLBACK_CHAR
+
+Corrections to the Phase 8 spec text
+  - "has ISO Latin-1": the glyph data is in the source but disabled in 1.0.8; Latin-1 does not render.
+  - "only two block elements": correct; the same page also has four triangle glyphs the spec does not mention.
+  - U+2592, U+2593 and U+2620 missing: confirmed.
+
+Colors: all 16 EFI_TEXT_ATTR foregrounds are distinct on black. BLUE and DARKGRAY are dim on black;
+  GREEN / LIGHTGREEN, WHITE, YELLOW and RED / LIGHTRED (the mockup's palette) are clear.
+
+Not verified
+  - Other renderers (BuiltinText, SystemGraphics, SystemText, SystemGeneric): only BuiltinGraphics was run.
+  - Real firmware and real displays; HiDPI scaling (UIScale 2).
+  - Whether a custom OpenCore console font (UEFI > Output > ConsoleFont) could add the missing shades. Not tried;
+    the spec calls for GOP bitmaps for the art instead.

@@ -1,0 +1,28 @@
+B00tGeni3 Phase 1 bench run - macOS build host - run 20261114-141059
+Mode: headless, OVMF edk2-x86_64-code.fd (MacPorts qemu 11.1.1, hvf), RELEASE OpenCore 1.0.8 from Phase 0 zip
+ocvalidate: No issues found
+Picker screenshot shows: 'OpenCore Boot Menu (REL-108-2026-11-14)', '1. UEFI Shell' (OpenShell.efi), Shutdown, Restart
+Serial: OVMF BdsDxe lines only; no 'OC:' lines (RELEASE compiles out DEBUG_INFO, OpenCorePkg.dsc:424)
+ee68a14fac51d2f289c1d94720bce52ebbf5602dbdd995e65dee6440ff2f03a5  ESP/EFI/OC/config.plist
+76cc5b76f75107f8e705fe86f97a695c907c498000f4f301fca409688d271bdd  ESP/EFI/OC/OpenCore.efi
+19fa90b921fef5d29f2ce1f2cb8fd38aded259d7f4a1fa1615c27f7e970f6474  ESP/EFI/BOOT/BOOTx64.efi
+12b448fa3bf9481fc3661fb36fe10b02b02423e8dff9b7a636821d75974a3d09  run/esp.cdr
+3c81e582f9630f8519ad4c5cc72d417f5687ced17274e2f77d019ed00b119e35  logs/20261114-141059-picker.png
+81ee0d849619d32a28f86dd9e7c3b14a4363a2f01c9406948f1c68389e8cf392  logs/20261114-141059-qemu.log
+bb50e913c752428ae49ae6c20879196f507926cc685cad83986494244299d124  logs/20261114-141059-serial.log
+
+=== GATE RUN 20261114-142010 (--debug) ===
+OpenCore.efi in image: DEBUG X64 from Phase 0 (sha256 2a9c53d9...; master ESP/ still RELEASE)
+Picker screenshot: 'OpenCore Boot Menu (DBG-108-2026-11-14)', '1. UEFI Shell', Shutdown, Restart
+Serial gate lines:
+OC: Loaded configuration of 58605 bytes
+OC: OpenCore DBG-108-2026-11-14 is loading in Optional mode (0/0)...
+01:216 00:020 OCB: Adding custom entry UEFI Shell (tool|B:0) -> OpenShell.efi
+01:238 00:008 OCB: Showing menu... 
+config.plist size on disk: 58605 bytes (matches)
+6a9ea407d675d00cc39bcae58483734c2d7094197c25f985b6b2fd55f03be1e9  bench.sh
+797faec45240ed076b146e72552c0186cf64f95921e54c7535c5f80422cce23a  CHANGES.txt
+0bcd274fbd43e812c7ce99b874a6690a29c964d6df0ebf4b04e2e685927b675c  run/esp.cdr
+b12de5b890546b39d72014c6b6edab11590bbf59d4495328d81c084e97b5f11b  logs/20261114-142010-picker.png
+81ee0d849619d32a28f86dd9e7c3b14a4363a2f01c9406948f1c68389e8cf392  logs/20261114-142010-qemu.log
+3350bbcb8d8e33c738d17c132bfa97508f2d0ca88f80115543756f57eeb0e74b  logs/20261114-142010-serial.log

@@ -1,0 +1,58 @@
+B00tGeni3 Phase 5 evidence - pre-flight check
+Machine: macOS 12.7.6 build host. QEMU 11.1.1 + OVMF, DEBUG OpenCore 1.0.8. Date: 2026-11-14.
+
+RESULT: GATE PASSED. 8 deliberately broken variants each refused with a plain reason on screen; nothing written
+  to disk by any refusal; a good variant (test1.plist) still passes pre-flight and swaps.
+
+Tool: B00tGeni3 0.5
+  efi    sha256 45ed49512d077773ccb1578d07e4ba0824d3ac9f45e83aaca090d1306c703f79  (bench/run/B00tGeni3-phase5-RELEASE-X64.efi)
+  source sha256 b431c40eb1e84838dde4e9336cff685d85e5f7dd52d528b98b2d372bd7162efa  (src/history/B00tGeni3-phase5-v0.5.c)
+  build log src/build_oc-b00tgeni3-phase5.log - exit 0, 0 compiler "warning:" lines, 0 "error:" lines
+
+What the pre-flight checks (PreflightVariant, runs on pick, before the Y prompt, on a copy of the variant data)
+  1. parses with OpenCore's OcConfigurationLib (OcConfigurationInit)
+  2. Misc > Boot > ShowPicker is true
+  3. B00tGeni3.efi is an enabled entry under Misc > Tools
+  4. every file referenced by an enabled Drivers, Kexts (Info.plist + executable), ACPI or Tools entry exists
+  5. EXTRA, not in the plan: Misc > Security > Vault is Optional. Reason: OpenCoreMisc.c:501 - OpenCore stops when
+     the config asks for a vault and none is present. To be lifted by Phase 7 (vault support).
+  Schema warnings from the parser are shown as a note, not a refusal (OpenCore logs them and continues).
+
+Gate report: bench/logs/20261114-221723-phase5-gate.txt (2 QEMU sessions, fresh image each, bench.sh --extra-variants)
+  Broken variants: bench/phase5-variants/{a,b}/, made by bench/tools/make-broken-variants.py, hashes in the report.
+  variant              what is wrong                         reason shown on screen (read from the screenshot)
+  bad-acpi.plist       ACPI Add -> NoSuchTable.aml           missing file: EFI\OC\ACPI\NoSuchTable.aml (Not Found)
+  bad-driver.plist     Driver -> NoSuchDriver.efi            missing file: EFI\OC\Drivers\NoSuchDriver.efi (Not Found)
+  bad-kext.plist       Kext -> NoSuchKext.kext               missing file: ...\NoSuchKext.kext\Contents\Info.plist and ...\MacOS\NoSuchKext
+  bad-tool.plist       Tool -> NoSuchTool.efi                missing file: EFI\OC\Tools\NoSuchTool.efi (Not Found)
+  bad-nopicker.plist   ShowPicker false                      Misc > Boot > ShowPicker is false: the picker would not appear
+  bad-notool.plist     B00tGeni3 tool entry disabled         B00tGeni3.efi is not an enabled entry under Misc > Tools: no way back from this config
+  bad-parse.plist      known-good cut off at 3000 bytes      not a valid plist: OpenCore's parser rejects it (Unsupported)
+  bad-vault.plist      Vault Secure                          Misc > Security > Vault is Secure: needs Optional (vault support is not in this version)
+  Every refusal ends: "REFUSED: <name> is not safe to activate. Nothing was changed."
+  Screenshots: bench/logs/20261114-221724-p5a-bad-{acpi,driver,kext,tool}.png, 20261114-221851-p5b-bad-{nopicker,notool,parse,vault}.png
+    Read by CC from run 221723: acpi, driver, tool, notool, parse, vault. Read from the earlier run 221239/221408
+    (same tool, same variants): kext, nopicker. The 221723 copies of those two were not opened.
+  Host check, image attached read-only (fsck clean both times):
+    batch a after 4 refusals: config.plist 11f07ac5...260f82 == known-good, no config.plist.bak, no active.txt, no temp files
+    batch b after 4 refusals + test1: config.plist 91caa7f9...c83a0e == test1, backup 11f07ac5 == known-good, active.txt test1.plist
+  Positive control screenshot: 20261114-221851-p5b-test1-switching.png - "Pre-flight check of test1.plist: OK", then the 6 swap steps all Success.
+
+Bench config change made for this phase (see CHANGES.txt)
+  Sample.plist ships Lilu, VirtualSMC, WhateverGreen, AppleALC enabled; the bench ESP has no kexts, so the pre-flight
+  would refuse known-good itself. Those 4 entries are now disabled in config.plist, known-good.plist, test1.plist.
+  New hashes: known-good 11f07ac536ba772263390f65bb8a2acab743e2017d7a48fd5d0979a8e5260f82
+              test1      91caa7f97cf51fb2224e69814e21e763d58743696d81cf9a6aa876566ec83a0e
+  Old files: bench/run/config.plist.pre-phase5, bench/run/test1.plist.pre-phase5.
+
+Earlier incomplete run, kept: bench/logs/20261114-221239-phase5-gate-INCOMPLETE-harness.txt
+  QEMU monitor socket went silent part-way through batch b (second time this has happened; cause not verified).
+  bench.sh mon() now checks for the (qemu) prompt, retries 3 times, and saves a QEMU stack sample if it stays silent.
+  No retries and no silent monitor in run 221723.
+
+Limits of this check (not verified / not covered)
+  - Existence only: a present but corrupt or incompatible driver can still stop OpenCore before the picker.
+  - The tool is matched by the file name B00tGeni3.efi; a renamed tool would be reported as not listed.
+  - Tools entries with Auxiliary=true plus HideAuxiliary=true stay reachable (Space in the picker) and are not flagged.
+  - PickerMode External without OpenCanopy resources is not checked.
+  - Phase 4 fault testing (10-swap run, power cut, oversize/empty variants) still deferred by oTR-DaRkNeSs.

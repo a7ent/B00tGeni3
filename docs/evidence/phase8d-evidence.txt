@@ -1,0 +1,85 @@
+B00tGeni3 Phase 8d evidence - new screen (draft A2) and boot-args editing
+Date: 2026-11-15/16. Machine: macOS 12.7.6 build host. Bench: QEMU 11.1.1, OVMF, OpenCore 1.0.8 RELEASE.
+All runs on the bench disk image only. No EFI partition touched, nothing pushed. No 2025 code used.
+
+TOOL
+  0.8d build 1  sha256 prefix in bench/CHANGES.txt   (run 1)
+  0.8d build 2  sha256 f148792d8ff6f35b55804d25c12bf60dd4c86ea81cc7f56d214066ba9b082b11  (runs 2-5; staged now)
+  Build 2 differs from build 1 by one number (info row boot-args value 28 -> 27 cells wide).
+  Module-only builds: src/build-module-phase8d.log and -2.log, exit 0, no warnings. No full build_oc.tool
+  build was done for 0.8d.
+  Source: patch script phase8/tools/patch-8d.py + phase8/src-fragments/ui-8d-run.c applied to 0.8c.
+  Pre-patch source: src/history/pre-8d/. Result: src/history/B00tGeni3-phase8d-v0.8d.c/.inf, B00tArt-phase8d-v0.8d.h.
+
+SCREEN (oTR-DaRkNeSs's approved draft: phase8/drafts/draft-A2.png)
+  Full layout 124x56 at 1920x1080:  bench/logs/20261115-230610-p8d-main.png (crop: phase8/evidence-8d/first-main.png)
+  Compact layout 124x48 at 1024x768: bench/logs/20261115-230715-p8d-c-main.png
+  Compact layout at 2560x1600, UI scale 2 (test1.plist has Resolution Max): 20261116-010906-p8d-list-after-main.png
+  Credit line reads "By: oTR-DaRkNeSs x CL4UD3-C0D3 <cc/>". The old co-author name is not in the 0.8d source.
+
+GATE (spec: COMMIT puts the expected string in the swapped config, the pre-flight passes, a diff of the raw
+XML shows only the boot-args string changed)
+  Run 1  20261116-004122  1920x1080  APPLY & REBOOT
+    Steps: SAFE BOOT checkbox, DEBUG checkbox, alcid=1 from ADDITIONAL-ARGS-LIST, typed " cpus=1" in the line.
+    p8d-apply-confirm: edit OK 59124 bytes (was 59094), pre-flight OK, read back OK, confirm page.
+    After the cold reset, config.plist and B00tGeni3\config.plist.bak were copied out of run/esp.cdr
+    (mounted read-only) to phase8/evidence-8d/run1/:
+      diff config-before.plist config-after.plist ->
+        1621c1621
+        < <string>-v keepsyms=1</string>
+        > <string>-v keepsyms=1 -x debug=0x100 alcid=1 cpus=1</string>
+      size 59094 -> 59124 (+30 = length of the added text)
+      ocvalidate config-after.plist: "No issues found."
+    p8d-after-main: after the reset the line and the NVRAM boot-args both show the new string.
+  Run 2  20261116-010622  1920x1080  COMMIT (no reset)
+    p8d-commit-done: same checks, Phase 4 swap steps all Success, "Saved. OpenCore uses it from the next boot."
+    Image diff (evidence-8d/run2): only line 1621, "-v keepsyms=1" -> "-v keepsyms=1 -x".
+  Run 3  20261116-010745  1920x1080  B00T ONCE
+    p8d-once-confirm: red UNTESTED warning, confirm page. p8d-once-main: after returning to the picker and
+    starting the tool again, NVRAM boot-args reads "-v keepsyms=1 -s"; config.plist in the image still has
+    "-v keepsyms=1" and no config.plist.bak was written (evidence-8d/run3).
+  Run 4  20261116-010906  1920x1080  variant list swap
+    Cursor on test1.plist, Enter, confirm, cold reset. Image: config.plist is byte-identical to test1.plist,
+    active.txt = test1.plist. Screen after reset shows test1.plist ACTIVE.
+  Run 5  20261116-014809  1024x768   regression on the compact layout
+    Arrow keys reach the tools row; DUMP-DISKMAP page works; ADDITIONAL-ARGS-LIST page opens.
+
+HOW THE SAVE WORKS
+  The tool finds the single <key>boot-args</key> in the raw file, requires the <string> after it to be exactly
+  the text OpenCore's parser reports, and replaces only that text in a copy. It then runs the unchanged Phase 5
+  pre-flight on the copy, parses the copy again to confirm boot-args and serial, and writes it with the
+  unchanged Phase 4 swap (backup, temp file, verify, rename). It refuses if the key is missing, repeated, or
+  the value has escaped characters. The typed line does not accept < > &.
+
+DIFFERENCES FROM THE SPEC / DRAFT
+  - COMMIT saves without a reset; APPLY & REBOOT saves and cold resets. The spec gives both the same
+    behaviour (save and reset).
+  - The overview box shows pre-flight PASS/REFUSED, size, hash, state and the boot-args/serial comparison.
+    The draft's "parses ok / vault Optional" and "SIP" lines are not there: the unchanged pre-flight only
+    returns pass or fail.
+  - LOAD-ALTERNATE is now the CONFIGS list itself (Enter on a variant).
+  - The ADDITIONAL-ARGS-LIST entries (keepsyms=1, alcid=1, npci=0x2000, npci=0x3000, agdpmod=pikera,
+    -wegnoegpu, -igfxvesa, -no_compat_check) are from memory. They were NOT checked against Dortania in this
+    session; they are choices in a menu, not recommendations.
+  - active.txt reads "edited-boot-args" after a COMMIT or APPLY.
+
+NOT TESTED / NOT VERIFIED
+  - B00T ONCE with a real macOS boot (labelled UNTESTED in the tool, as the spec asks).
+  - The refuse paths of the save (repeated key, escaped value, failing pre-flight), Esc/Backspace while
+    typing, a line longer than the field, more than 5 variants (list scrolling).
+  - NVRAM-RESET, SIP toggle, UEFI SHELL, DUMP SSDT, RESTORE-FAILSAFE were not rerun on 0.8d; their code is
+    unchanged from 0.8c (phase8c-evidence.txt). Only DUMP-DISKMAP was rerun.
+  - A small mark inside the banner near MISSING in compact-layout screenshots looks like a mouse pointer
+    outline; cause not verified.
+  - MAC address path (bench has no network card), real hardware.
+
+ADDENDUM 2026-11-16 - 0.8e and laptop-EFI trial (bench only)
+  0.8e (sha256 58de06fc92df6c20c827b7ccb45f56a3984f046282d889aa84b93fe0bdc018bb): ADDITIONAL-ARGS-LIST has 36 args
+  with descriptions. Run 20261116-131336: page opens, all 36 on one page (p8e-args1.png). Nothing else rerun on 0.8e.
+  Laptop EFI copy + live-test add-on (0.8d) as bench image run/esp-laptop.cdr:
+    20261116-081842 picker: OpenCanopy shows B00tGeni3; version stamp REL-106-2025-11-03 (OpenCore 1.0.6).
+    20261116-083511 tool starts under 1.0.6, compact layout, arrows move; all 3 variants pre-flight REFUSED.
+    20261116-113623 reason: missing Tools\memtest86\BOOTX64.efi, VoodooI2C PlugIns\VoodooI2CServices.kext
+    (Info.plist + binary), VoodooPS2Controller PlugIns\VoodooPS2Keyboard.kext (Info.plist + binary).
+    The local copy has PlugIns/VOODOO~2.KE0 in both kexts and no Tools/memtest86; config enables all three.
+    Real laptop ESP not inspected.

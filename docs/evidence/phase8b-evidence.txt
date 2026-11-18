@@ -1,0 +1,52 @@
+B00tGeni3 Phase 8b - art - evidence
+Date: 2026-11-15. Machine: macOS 12.7.6 build host. Bench: QEMU + OVMF, OpenCore 1.0.8 RELEASE, TextRenderer BuiltinGraphics.
+
+GATE: screenshots at both resolutions next to the mockup photo -> PASS
+  phase8/p8b-sidebyside-1920x1080.png   mockup capture (left) | bench, full 56-line layout (right)
+  phase8/p8b-sidebyside-1024x768.png    mockup capture (left) | bench, compact 47-line layout (right)
+  bench/logs/20261115-135614-p8b-main-1920x1080.png   raw screenshot, full layout
+  bench/logs/20261115-135520-p8b-main-1024x768.png    raw screenshot, compact layout
+  bench/logs/20261115-135614-p8b-menu-1920x1080.png, 20261115-135520-p8b-menu-1024x768.png   plain menu after a key (screen fully cleared)
+
+TOOL
+  Version 0.8b, bench/ESP/EFI/OC/Tools/B00tGeni3.efi and bench/run/B00tGeni3-phase8b-RELEASE-X64.efi
+  sha256 332489cbf17b33c9a2b2ce0cbf8559227be01b6a20401c67b79a2c5bd844dd5a
+  Build log src/build_oc-b00tgeni3-phase8b-3.log: exit 0, 0 compiler warnings in the tool.
+  Source copies: src/history/B00tGeni3-phase8b-v0.8b.c / .inf, B00tArt-phase8b-v0.8b.h
+
+HOW THE ART WAS MADE
+  oTR-DaRkNeSs's original mockup.txt / LOGO1.TXT / ART folder are not on the build host (mdfind and find: no hits).
+  The art is rebuilt from phase8/mockup/mockup-photo-2.png (a straight screen capture) by phase8/tools/gen-art.py:
+    - cell grid of the capture: 4.667 x 9.333 px per character, origin x 333.2 y 137 (tools/grid.py, grid2.py)
+    - OTR DARKNSS logo (98 x 11 cells) and B00TG3N13 logo (112 x 7 cells): one shade level 0-4 per cell,
+      from the median brightness of each cell; drawn as solid blocks at 0/29/57/76/100 percent brightness
+    - bottom banner: 864 x 48 px 1-bit bitmap, upsampled from the capture and thresholded
+    - text: 132 items with row/column; the rebuilt 56-line text is phase8/art/mockup-rebuilt.txt
+  Output: phase8/art/B00tArt.h, compiled into the .efi. All art is drawn with GOP Blt; the rest with ConOut.
+  No 2025 B00tGeni3 code was used.
+
+LAYOUTS (chosen in UiInit from ConOut columns x rows and the GOP resolution)
+  full     console >= 124 x 56: the mockup's 56 lines, centred (1920x1080 = 240 x 67)
+  compact  console >= 124 x 47: both logos at half size, 9 rows dropped, small star dropped (1024x768 = 128 x 48)
+  neither, no GOP, or a console whose cells are not the builtin renderer's 8x16: the Phase 5 plain menu only
+  UI scale 2 is handled in the code but NOT tested.
+
+COLORS
+  B00TG3N13 logo green; OTR DARKNSS logo and banner white; borders EFI_WHITE; labels EFI_LIGHTGRAY; URL EFI_LIGHTBLUE;
+  boot-arg field black on light gray. The logo shades are brightness steps of white/green drawn by Blt, so they are
+  outside the 16 text colors (needed for the shading the spec asks for). Yellow selection / red warnings come with 8c.
+
+DIFFERENCES FROM THE MOCKUP (all approximations of a 1392x807 capture)
+  - "By:" on line 27: the capture reads "Bu:" or "By:" at this size; "By:" used. NOT VERIFIED.
+  - Skull U+2620 between "B00tGeni3" and "2025": the builtin font lacks it; replaced by an 8x16 bitmap drawn by CC.
+  - Side border groups: "*#*" used throughout ("***" on line 6); the exact characters are not readable in the capture.
+    Their column positions are taken from the capture.
+  - Exact counts of '*' vs '#' at the ends of line 25 are a best reading.
+  - Logo cells where the capture is between two shade levels were rounded to the nearer one.
+  - Compact layout is CC's arrangement; the mockup has no small version.
+
+8b SCOPE
+  The screen is drawn but not wired up: any key leaves it for the Phase 5 plain menu (swap and pre-flight unchanged
+  in code; NOT re-tested in 8b). Navigation, the info row values and the tools are 8c; boot-args are 8d.
+  Fix history: build 1 drew logos after text (tagline and star hidden in full layout); build 2 fixed it; build 3
+  hides the star in the compact layout. Earlier screenshots 20261115-1101xx/1106xx/1155xx/1156xx are from builds 1-2.

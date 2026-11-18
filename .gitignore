@@ -1,0 +1,15 @@
+# keys never go in the repo
+*.pem
+*.key
+*-key-*/
+*THROWAWAY*/
+# build and bench output
+Build/
+*.efi
+*.cdr
+*.fd
+bench/run/
+bench/logs/
+bench/ESP*/
+.DS_Store
+__pycache__/
