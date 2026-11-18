@@ -51,7 +51,7 @@
 
 #include "B00tArt.h"
 
-#define B00T_VERSION         L"0.8e"
+#define B00T_VERSION         L"0.8f"
 #define B00T_TOOL_NAME       "B00tGeni3.efi"
 #define B00T_MAX_PATH        256
 #define B00T_MAX_ARGS        256
@@ -76,6 +76,7 @@ typedef struct {
   UINTN      Size;
   UINT8      Hash[SHA256_DIGEST_SIZE];
   BOOLEAN    Active;
+  EFI_STATUS ReadStatus;  // not EFI_SUCCESS: the file could not be read, Data is a 1-byte empty buffer
 } B00T_VARIANT;
 
 STATIC
@@ -542,8 +543,20 @@ LoadVariants (
     StrCpyS (Variants[*Count].Name, B00T_MAX_NAME, Info->FileName);
     Status = ReadWholeFile (B00tDir, Info->FileName, &Variants[*Count].Data, &Variants[*Count].Size);
     if (EFI_ERROR (Status)) {
+      //
+      // Keep it in the list as an empty file so the pre-flight refuses it with this status.
+      // One bad file must not hide the others.
+      //
       Print (L"Cannot read %s - %r\n", Info->FileName, Status);
-      break;
+      Variants[*Count].ReadStatus = Status;
+      Variants[*Count].Size       = 0;
+      Variants[*Count].Data       = AllocateZeroPool (1);
+      if (Variants[*Count].Data == NULL) {
+        Status = EFI_OUT_OF_RESOURCES;
+        break;
+      }
+
+      Status = EFI_SUCCESS;
     }
 
     Sha256 (Variants[*Count].Hash, Variants[*Count].Data, Variants[*Count].Size);
@@ -554,6 +567,14 @@ LoadVariants (
   }
 
   FreePool (Info);
+  if (EFI_ERROR (Status) && (*Count > 0) && (Status != EFI_OUT_OF_RESOURCES)) {
+    //
+    // The directory listing failed part way: keep what loaded, known-good may be among it.
+    //
+    Print (L"Reading %s stopped early - %r\n", B00T_DIR_PATH, Status);
+    Status = EFI_SUCCESS;
+  }
+
   if (EFI_ERROR (Status)) {
     FreeVariants (Variants, *Count);
     *Count = 0;
@@ -639,6 +660,12 @@ PreflightVariant (
   OC_KERNEL_ADD_ENTRY  *Kext;
   OC_ACPI_ADD_ENTRY    *Table;
   CONST CHAR8          *Path;
+
+  if (EFI_ERROR (Variant->ReadStatus)) {
+    Print (L"  - cannot read the file: %r", Variant->ReadStatus);
+    Print (Variant->ReadStatus == EFI_BAD_BUFFER_SIZE ? L" (larger than 1 MB)\n" : L"\n");
+    return FALSE;
+  }
 
   //
   // The plist parser works in place, so it gets a copy: the variant data is what gets written.
