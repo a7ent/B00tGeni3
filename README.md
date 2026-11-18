@@ -119,10 +119,37 @@ reference. `bench/CHANGES.txt` lists every build with its sha256.
 - `docs/phase8-spec.md`: the UI and feature spec.
 - `docs/drafts/`: the A2 screen design, plus vault UI drafts V1 and V1b. These are not built yet.
 
+## What has been tested (QEMU + OVMF, OpenCore 1.0.8)
+
+- Plain swaps: 10/10 on 0.8e, 2/2 again on 0.8g. Each one was checked from the host afterwards (disk
+  check, file hashes, backup, leftover temp files).
+- Bad variants (empty, garbage, cut off, not a config, Vault Secure, missing kext, over 1 MB): all
+  refused, each with its reason.
+- Power cut at 9 points during a swap: `config.plist` was always a whole old or new file, and the next
+  swap cleaned up.
+- Vault: a signed swap round trip worked. The tool refused 4 tampered sets, and OpenCore refused the
+  same sets. COMMIT is refused while a vault is active. See `docs/evidence/phase7a/7b`.
+
 ## Known gaps
 
 - Nothing has run on real hardware yet. Firmware FAT drivers differ from OVMF's.
 - B00T ONCE has not been tried with a real macOS boot.
 - A power cut mid-swap can leave FAT damage or temp files. The next swap clears the temp files; use
-  Disk Utility First Aid for the FAT damage.
-- The vault swap's tool-side gate run (refusals on screen, swap round trip, power cut) is in progress.
+  Disk Utility First Aid for the FAT damage. With a vault, a cut during the final renames can stop
+  OpenCore before the picker. This was accepted as a risk and not demonstrated.
+- APPLY & REBOOT under a vault is refused by the same code as COMMIT, but wasn't run on its own.
+
+## Issues
+
+Found a problem? Open an issue and include:
+- the OpenCore version
+- the firmware or board
+- what the screen showed (a photo is fine)
+- the variant that caused it, with serials removed
+
+Fixes come as updates when problems can be pinned down.
+
+## License
+
+BSD 3-Clause, see `LICENSE`. Built on [OpenCorePkg](https://github.com/acidanthera/OpenCorePkg) (also BSD-3).
+The notes in `docs/` and `bench/` mention the original build host only in generic terms.
