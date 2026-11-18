@@ -14,10 +14,17 @@
 
   Before a swap the variant goes through a pre-flight check and is refused,
   with every reason printed, unless: it parses with OcConfigurationLib,
-  ShowPicker is true, Vault is Optional, this tool is still an enabled Tools
-  entry, and every file referenced by an enabled Drivers, Kexts, ACPI or Tools
-  entry exists. A config failing these could stop OpenCore before the picker,
-  where this tool cannot be reached to switch back.
+  ShowPicker is true, this tool is still an enabled Tools entry, every file
+  referenced by an enabled Drivers, Kexts, ACPI or Tools entry exists, and the
+  vault check passes. A config failing these could stop OpenCore before the
+  picker, where this tool cannot be reached to switch back.
+
+  Vault (Phase 7): OpenCore checks every file it reads against OC\vault.plist
+  whenever that file exists, and needs OC\vault.sig to match the key patched
+  into OpenCore.efi when there is one. A variant that needs a vault brings its
+  own set, signed on the Mac (the tool never signs): NAME.vault and NAME.vsig
+  next to NAME.plist. The pre-flight checks the set against the variant and
+  against every file under EFI\OC, and the swap writes all three files.
 
   Every write goes to a temporary name first and is read back before it is
   renamed into place, and there is always a complete config on disk
@@ -42,6 +49,8 @@
 #include <Library/OcAcpiLib.h>
 #include <Library/OcConfigurationLib.h>
 #include <Library/OcCryptoLib.h>
+#include <Library/OcSerializeLib.h>
+#include <Library/OcStorageLib.h>
 #include <Library/OcStringLib.h>
 #include <Library/PrintLib.h>
 #include <Library/UefiApplicationEntryPoint.h>
@@ -51,7 +60,7 @@
 
 #include "B00tArt.h"
 
-#define B00T_VERSION         L"0.8f"
+#define B00T_VERSION         L"0.8g"
 #define B00T_TOOL_NAME       "B00tGeni3.efi"
 #define B00T_MAX_PATH        256
 #define B00T_MAX_ARGS        256
@@ -69,6 +78,22 @@
 #define B00T_MAX_VARIANTS    9
 #define B00T_MAX_NAME        64
 #define B00T_MAX_FILE_SIZE   SIZE_1MB
+#define B00T_VAULT_NAME      L"vault.plist"
+#define B00T_VAULT_TMP       L"vault.tmp"
+#define B00T_VSIG_NAME       L"vault.sig"
+#define B00T_VSIG_TMP        L"vault.sig.tmp"
+#define B00T_VAULT_BAK       L"vault.plist.bak"
+#define B00T_VAULT_BAK_TMP   L"vault.bak.tmp"
+#define B00T_VSIG_BAK        L"vault.sig.bak"
+#define B00T_VSIG_BAK_TMP    L"vsig.bak.tmp"
+#define B00T_SET_VAULT_EXT   L".vault"
+#define B00T_SET_SIG_EXT     L".vsig"
+#define B00T_OC_EFI_NAME     L"OpenCore.efi"
+#define B00T_MAX_EFI_SIZE    SIZE_8MB
+#define B00T_MAX_DISK_FILES  1024
+#define B00T_VAULT_SIG_SIZE  256
+#define B00T_VAULT_KEY_SIZE  528
+#define B00T_MAX_DETAIL      6
 
 typedef struct {
   CHAR16     Name[B00T_MAX_NAME];
@@ -77,6 +102,10 @@ typedef struct {
   UINT8      Hash[SHA256_DIGEST_SIZE];
   BOOLEAN    Active;
   EFI_STATUS ReadStatus;  // not EFI_SUCCESS: the file could not be read, Data is a 1-byte empty buffer
+  UINT8      *VaultData;  // NAME.vault from the variant folder, NULL if there is none
+  UINTN      VaultSize;
+  UINT8      *SigData;    // NAME.vsig, NULL if there is none
+  UINTN      SigSize;
 } B00T_VARIANT;
 
 STATIC
@@ -202,9 +231,10 @@ DeleteIfExists (
 
 STATIC
 EFI_STATUS
-ReadWholeFile (
+ReadWholeFileMax (
   IN  EFI_FILE_PROTOCOL  *Dir,
   IN  CONST CHAR16       *Name,
+  IN  UINT64             MaxSize,
   OUT UINT8              **Data,
   OUT UINTN              *Size
   )
@@ -238,7 +268,7 @@ ReadWholeFile (
   }
 
   Status = File->GetInfo (File, &gEfiFileInfoGuid, &InfoSize, Info);
-  if (EFI_ERROR (Status) || (Info->FileSize > B00T_MAX_FILE_SIZE)) {
+  if (EFI_ERROR (Status) || (Info->FileSize > MaxSize)) {
     FreePool (Info);
     File->Close (File);
     return EFI_ERROR (Status) ? Status : EFI_BAD_BUFFER_SIZE;
@@ -267,6 +297,18 @@ ReadWholeFile (
 
   *Data = Buffer;
   return EFI_SUCCESS;
+}
+
+STATIC
+EFI_STATUS
+ReadWholeFile (
+  IN  EFI_FILE_PROTOCOL  *Dir,
+  IN  CONST CHAR16       *Name,
+  OUT UINT8              **Data,
+  OUT UINTN              *Size
+  )
+{
+  return ReadWholeFileMax (Dir, Name, B00T_MAX_FILE_SIZE, Data, Size);
 }
 
 STATIC
@@ -470,6 +512,48 @@ FreeVariants (
       FreePool (Variants[Index].Data);
       Variants[Index].Data = NULL;
     }
+
+    if (Variants[Index].VaultData != NULL) {
+      FreePool (Variants[Index].VaultData);
+      Variants[Index].VaultData = NULL;
+    }
+
+    if (Variants[Index].SigData != NULL) {
+      FreePool (Variants[Index].SigData);
+      Variants[Index].SigData = NULL;
+    }
+  }
+}
+
+/**
+  Read the variant's vault set (NAME.vault, NAME.vsig) if it has one. A missing file
+  leaves the pointer NULL; the pre-flight decides whether that matters.
+**/
+STATIC
+VOID
+LoadVaultSet (
+  IN     EFI_FILE_PROTOCOL  *B00tDir,
+  IN OUT B00T_VARIANT       *Variant
+  )
+{
+  EFI_STATUS  Status;
+  CHAR16      SetName[B00T_MAX_NAME + 8];
+  UINTN       StemLength;
+
+  StemLength = StrLen (Variant->Name) - 6;  // without ".plist"
+  CopyMem (SetName, Variant->Name, StemLength * sizeof (CHAR16));
+  SetName[StemLength] = L'\0';
+  StrCatS (SetName, ARRAY_SIZE (SetName), B00T_SET_VAULT_EXT);
+  Status = ReadWholeFile (B00tDir, SetName, &Variant->VaultData, &Variant->VaultSize);
+  if (EFI_ERROR (Status) && (Status != EFI_NOT_FOUND)) {
+    Print (L"Cannot read %s - %r\n", SetName, Status);
+  }
+
+  SetName[StemLength] = L'\0';
+  StrCatS (SetName, ARRAY_SIZE (SetName), B00T_SET_SIG_EXT);
+  Status = ReadWholeFile (B00tDir, SetName, &Variant->SigData, &Variant->SigSize);
+  if (EFI_ERROR (Status) && (Status != EFI_NOT_FOUND)) {
+    Print (L"Cannot read %s - %r\n", SetName, Status);
   }
 }
 
@@ -557,6 +641,8 @@ LoadVariants (
       }
 
       Status = EFI_SUCCESS;
+    } else {
+      LoadVaultSet (B00tDir, &Variants[*Count]);
     }
 
     Sha256 (Variants[*Count].Hash, Variants[*Count].Data, Variants[*Count].Size);
@@ -590,6 +676,493 @@ LoadVariants (
   }
 
   return EFI_SUCCESS;
+}
+
+//
+// Vault. The schema is OpenCore's own (OcStorageLib.c), which does not export it.
+//
+STATIC
+OC_SCHEMA
+  mB00tVaultFilesSchema = OC_SCHEMA_DATAF (NULL, UINT8[SHA256_DIGEST_SIZE]);
+
+///
+/// WARNING: Field list must be alpabetically ordered here!
+///
+STATIC
+OC_SCHEMA
+  mB00tVaultNodesSchema[] = {
+  OC_SCHEMA_MAP_IN ("Files",       OC_STORAGE_VAULT, Files,    &mB00tVaultFilesSchema),
+  OC_SCHEMA_INTEGER_IN ("Version", OC_STORAGE_VAULT, Version),
+};
+
+STATIC
+OC_SCHEMA_INFO
+  mB00tVaultSchema = {
+  .Dict = { mB00tVaultNodesSchema, ARRAY_SIZE (mB00tVaultNodesSchema) }
+};
+
+typedef struct {
+  CHAR8      Path[OC_STORAGE_SAFE_PATH_MAX];  // as vault.plist names it: Drivers\OpenRuntime.efi
+  UINT8      Hash[SHA256_DIGEST_SIZE];
+  EFI_STATUS Status;                          // not EFI_SUCCESS: could not be hashed
+} B00T_DISK_FILE;
+
+//
+// What is on the disk now. Read once per run: nothing the tool writes before a reset is
+// covered by a vault (config.plist is compared separately, the B00tGeni3 folder is skipped).
+//
+STATIC BOOLEAN            mVaultStateRead;
+STATIC OC_RSA_PUBLIC_KEY  *mVaultKey;       // key patched into OC\OpenCore.efi, NULL if none
+STATIC EFI_STATUS         mVaultKeyStatus;  // reading OpenCore.efi
+STATIC BOOLEAN            mVaultPlistOnDisk;
+STATIC BOOLEAN            mDiskScanned;
+STATIC B00T_DISK_FILE     *mDiskFiles;
+STATIC UINTN              mDiskCount;
+STATIC EFI_STATUS         mDiskStatus;
+
+STATIC
+VOID
+ReadVaultState (
+  IN EFI_FILE_PROTOCOL  *OcDir
+  )
+{
+  STATIC CONST CHAR8  Magic[] = "=BEGIN OC VAULT=";
+  EFI_STATUS          Status;
+  EFI_FILE_PROTOCOL   *File;
+  UINT8               *Efi;
+  UINTN               EfiSize;
+  UINTN               Offset;
+  UINTN               Index;
+
+  if (mVaultStateRead) {
+    return;
+  }
+
+  mVaultStateRead = TRUE;
+  Status          = OcDir->Open (OcDir, &File, B00T_VAULT_NAME, EFI_FILE_MODE_READ, 0);
+  if (!EFI_ERROR (Status)) {
+    mVaultPlistOnDisk = TRUE;
+    File->Close (File);
+  }
+
+  mVaultKeyStatus = ReadWholeFileMax (OcDir, B00T_OC_EFI_NAME, B00T_MAX_EFI_SIZE, &Efi, &EfiSize);
+  if (EFI_ERROR (mVaultKeyStatus)) {
+    return;
+  }
+
+  //
+  // Same place sign.command patches: the 528 bytes after the start marker. All zero = no key.
+  //
+  for (Offset = 0; Offset + 16 + B00T_VAULT_KEY_SIZE <= EfiSize; ++Offset) {
+    if (CompareMem (Efi + Offset, Magic, 16) != 0) {
+      continue;
+    }
+
+    for (Index = 0; Index < B00T_VAULT_KEY_SIZE; ++Index) {
+      if (Efi[Offset + 16 + Index] != 0) {
+        //
+        // Pool memory is 8-byte aligned, which the UINT64 key words need.
+        //
+        mVaultKey = AllocateCopyPool (B00T_VAULT_KEY_SIZE, Efi + Offset + 16);
+        if (mVaultKey == NULL) {
+          mVaultKeyStatus = EFI_OUT_OF_RESOURCES;
+        }
+
+        break;
+      }
+    }
+
+    break;
+  }
+
+  FreePool (Efi);
+}
+
+/**
+  Files create_vault.sh leaves out, plus the ones only this tool writes.
+**/
+STATIC
+BOOLEAN
+SkipForVault (
+  IN CONST CHAR16  *Name,
+  IN UINTN         Depth,
+  IN BOOLEAN       Directory
+  )
+{
+  UINTN  Length;
+
+  if (Name[0] == L'.') {
+    return TRUE;
+  }
+
+  if (Directory) {
+    return Depth == 0 && B00tStriEqual (Name, L"B00tGeni3");
+  }
+
+  Length = StrLen (Name);
+  if (  ((Length >= 6) && (OcStrniCmp (Name, L"vault.", 6) == 0))
+     || B00tStriEqual (Name, B00T_OC_EFI_NAME)
+     || B00tStriEqual (Name, L"MemTest86.log")
+     || ((Length > 22) && (OcStrniCmp (Name, L"MemTest86-Report-", 17) == 0) && B00tStriEqual (Name + Length - 5, L".html")))
+  {
+    return TRUE;
+  }
+
+  return Depth == 0
+         && (  B00tStriEqual (Name, B00T_CONFIG_NAME)
+            || B00tStriEqual (Name, B00T_CONFIG_TMP)
+            || B00tStriEqual (Name, B00T_CONFIG_OLD));
+}
+
+STATIC
+EFI_STATUS
+HashFile (
+  IN  EFI_FILE_PROTOCOL  *Dir,
+  IN  CONST CHAR16       *Name,
+  IN  UINT8              *Buffer,
+  OUT UINT8              *Hash
+  )
+{
+  EFI_STATUS         Status;
+  EFI_FILE_PROTOCOL  *File;
+  SHA256_CONTEXT     Context;
+  UINTN              Size;
+
+  Status = Dir->Open (Dir, &File, (CHAR16 *)Name, EFI_FILE_MODE_READ, 0);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Sha256Init (&Context);
+  do {
+    Size   = SIZE_64KB;
+    Status = File->Read (File, &Size, Buffer);
+    if (!EFI_ERROR (Status) && (Size > 0)) {
+      Sha256Update (&Context, Buffer, Size);
+    }
+  } while (!EFI_ERROR (Status) && (Size > 0));
+
+  File->Close (File);
+  Sha256Final (&Context, Hash);
+  return Status;
+}
+
+STATIC
+VOID
+ScanDir (
+  IN     EFI_FILE_PROTOCOL  *Dir,
+  IN OUT CHAR8              *Path,
+  IN     UINTN              PathLength,
+  IN     UINTN              Depth,
+  IN     EFI_FILE_INFO      *Info,
+  IN     UINTN              InfoSize,
+  IN     UINT8              *Buffer
+  )
+{
+  EFI_STATUS         Status;
+  EFI_FILE_PROTOCOL  *Sub;
+  UINTN              ReadSize;
+  UINTN              Index;
+  UINTN              Length;
+  BOOLEAN            Directory;
+  B00T_DISK_FILE     *Entry;
+
+  if (Depth > 8) {
+    mDiskStatus = EFI_UNSUPPORTED;
+    return;
+  }
+
+  Status = Dir->SetPosition (Dir, 0);
+  while (!EFI_ERROR (Status) && !EFI_ERROR (mDiskStatus)) {
+    ReadSize = InfoSize;
+    Status   = Dir->Read (Dir, &ReadSize, Info);
+    if (EFI_ERROR (Status) || (ReadSize == 0)) {
+      break;
+    }
+
+    Directory = (Info->Attribute & EFI_FILE_DIRECTORY) != 0;
+    if (  (StrCmp (Info->FileName, L".") == 0) || (StrCmp (Info->FileName, L"..") == 0)
+       || SkipForVault (Info->FileName, Depth, Directory))
+    {
+      continue;
+    }
+
+    //
+    // Vault-style path: Prefix\Name. OpenCore compares the bytes as stored, so keep the case.
+    //
+    Length = StrLen (Info->FileName);
+    if (PathLength + Length + 2 > OC_STORAGE_SAFE_PATH_MAX) {
+      mDiskStatus = EFI_BUFFER_TOO_SMALL;
+      break;
+    }
+
+    for (Index = 0; Index < Length; ++Index) {
+      Path[PathLength + Index] = (Info->FileName[Index] < 0x80) ? (CHAR8)Info->FileName[Index] : '?';
+    }
+
+    Path[PathLength + Length] = '\0';
+
+    if (Directory) {
+      Status = Dir->Open (Dir, &Sub, Info->FileName, EFI_FILE_MODE_READ, 0);
+      if (EFI_ERROR (Status)) {
+        mDiskStatus = Status;
+        break;
+      }
+
+      Path[PathLength + Length]     = '\\';
+      Path[PathLength + Length + 1] = '\0';
+      ScanDir (Sub, Path, PathLength + Length + 1, Depth + 1, Info, InfoSize, Buffer);
+      Sub->Close (Sub);
+      //
+      // The recursion reused Info: read on from where this level was.
+      //
+      continue;
+    }
+
+    if (mDiskCount == B00T_MAX_DISK_FILES) {
+      mDiskStatus = EFI_BUFFER_TOO_SMALL;
+      break;
+    }
+
+    Entry = &mDiskFiles[mDiskCount++];
+    AsciiStrCpyS (Entry->Path, ARRAY_SIZE (Entry->Path), Path);
+    Entry->Status = HashFile (Dir, Info->FileName, Buffer, Entry->Hash);
+  }
+
+  if (EFI_ERROR (Status)) {
+    mDiskStatus = Status;
+  }
+}
+
+STATIC
+VOID
+ScanOcFiles (
+  IN EFI_FILE_PROTOCOL  *OcDir
+  )
+{
+  EFI_FILE_INFO  *Info;
+  UINTN          InfoSize;
+  UINT8          *Buffer;
+  CHAR8          Path[OC_STORAGE_SAFE_PATH_MAX];
+
+  if (mDiskScanned) {
+    return;
+  }
+
+  mDiskScanned = TRUE;
+  InfoSize     = SIZE_OF_EFI_FILE_INFO + 512 * sizeof (CHAR16);
+  Info         = AllocatePool (InfoSize);
+  Buffer       = AllocatePool (SIZE_64KB);
+  mDiskFiles   = AllocateZeroPool (B00T_MAX_DISK_FILES * sizeof (B00T_DISK_FILE));
+  if ((Info == NULL) || (Buffer == NULL) || (mDiskFiles == NULL)) {
+    mDiskStatus = EFI_OUT_OF_RESOURCES;
+  } else {
+    Path[0] = '\0';
+    ScanDir (OcDir, Path, 0, 0, Info, InfoSize, Buffer);
+  }
+
+  if (Info != NULL) {
+    FreePool (Info);
+  }
+
+  if (Buffer != NULL) {
+    FreePool (Buffer);
+  }
+}
+
+STATIC
+VOID
+PrintDetail (
+  IN OUT UINTN        *Shown,
+  IN     CONST CHAR16 *What,
+  IN     CONST CHAR8  *Path
+  )
+{
+  if (*Shown < B00T_MAX_DETAIL) {
+    Print (L"  - %s: %a\n", What, Path);
+  }
+
+  ++*Shown;
+}
+
+/**
+  The vault part of the pre-flight. Adds to Problems for everything that would make
+  OpenCore stop before the picker once this variant (and its set) is on disk.
+**/
+STATIC
+VOID
+PreflightVault (
+  IN     EFI_FILE_PROTOCOL   *OcDir,
+  IN     OC_GLOBAL_CONFIG    *Config,
+  IN     CONST B00T_VARIANT  *Variant,
+  IN OUT UINTN               *Problems
+  )
+{
+  CONST CHAR8       *Mode;
+  BOOLEAN           NeedSet;
+  OC_STORAGE_VAULT  Vault;
+  UINT8             *Copy;
+  UINT32            Index;
+  UINTN             Disk;
+  UINTN             Shown;
+  BOOLEAN           ConfigFound;
+  BOOLEAN           Found;
+  CONST CHAR8       *Path;
+
+  ReadVaultState (OcDir);
+  Mode = OC_BLOB_GET (&Config->Misc.Security.Vault);
+  Print (
+    L"  vault: %a, key in OpenCore.efi: %s, OC\\vault.plist: %s, set: %s\n",
+    Mode,
+    mVaultKey != NULL ? L"yes" : L"no",
+    mVaultPlistOnDisk ? L"yes" : L"no",
+    Variant->VaultData != NULL ? (Variant->SigData != NULL ? L"vault + sig" : L"vault only") : L"none"
+    );
+
+  if (EFI_ERROR (mVaultKeyStatus)) {
+    Print (L"  - cannot read OC\\%s to look for a vault key - %r\n", B00T_OC_EFI_NAME, mVaultKeyStatus);
+    ++*Problems;
+    return;
+  }
+
+  if (  (AsciiStrCmp (Mode, "Optional") != 0)
+     && (AsciiStrCmp (Mode, "Basic") != 0)
+     && (AsciiStrCmp (Mode, "Secure") != 0))
+  {
+    Print (L"  - Misc > Security > Vault is %a: OpenCore stops on an unknown mode\n", Mode);
+    ++*Problems;
+  }
+
+  if ((AsciiStrCmp (Mode, "Secure") == 0) && (mVaultKey == NULL)) {
+    Print (L"  - Vault is Secure but OpenCore.efi has no key: OpenCore would stop\n");
+    ++*Problems;
+  }
+
+  //
+  // OpenCore uses OC\vault.plist whenever it exists, and needs vault.sig whenever it has a key.
+  //
+  NeedSet = (mVaultKey != NULL) || mVaultPlistOnDisk || (AsciiStrCmp (Mode, "Optional") != 0);
+  if (Variant->VaultData == NULL) {
+    if (NeedSet) {
+      Print (L"  - no signed vault set for this config (NAME.vault + NAME.vsig, made on the Mac);\n");
+      Print (L"    the vault on disk would not match it and OpenCore would stop\n");
+      ++*Problems;
+    }
+
+    return;
+  }
+
+  if (mVaultKey != NULL) {
+    if ((Variant->SigData == NULL) || (Variant->SigSize != B00T_VAULT_SIG_SIZE)) {
+      Print (L"  - the set's .vsig is missing or not %u bytes\n", B00T_VAULT_SIG_SIZE);
+      ++*Problems;
+    } else if (!RsaVerifySigDataFromKeyDynalloc (
+                  mVaultKey,
+                  Variant->SigData,
+                  Variant->SigSize,
+                  Variant->VaultData,
+                  Variant->VaultSize,
+                  OcSigHashTypeSha256
+                  ))
+    {
+      Print (L"  - the set's signature does not match the key in OpenCore.efi\n");
+      ++*Problems;
+    }
+  }
+
+  //
+  // The parser works in place: give it a copy.
+  //
+  Copy = AllocateCopyPool (Variant->VaultSize, Variant->VaultData);
+  if (Copy == NULL) {
+    Print (L"  - out of memory, cannot check the vault\n");
+    ++*Problems;
+    return;
+  }
+
+  OC_STORAGE_VAULT_CONSTRUCT (&Vault, sizeof (Vault));
+  if (  !ParseSerialized (&Vault, &mB00tVaultSchema, Copy, (UINT32)Variant->VaultSize, NULL)
+     || (Vault.Version != OC_STORAGE_VAULT_VERSION))
+  {
+    Print (L"  - the set's .vault is not a version %u vault.plist\n", OC_STORAGE_VAULT_VERSION);
+    ++*Problems;
+    OC_STORAGE_VAULT_DESTRUCT (&Vault, sizeof (Vault));
+    FreePool (Copy);
+    return;
+  }
+
+  ScanOcFiles (OcDir);
+  if (EFI_ERROR (mDiskStatus)) {
+    Print (L"  - cannot list every file under EFI\\OC - %r\n", mDiskStatus);
+    ++*Problems;
+  }
+
+  ConfigFound = FALSE;
+  Shown       = 0;
+  for (Index = 0; Index < Vault.Files.Count; ++Index) {
+    Path = OC_BLOB_GET (Vault.Files.Keys[Index]);
+    if (AsciiStrCmp (Path, "config.plist") == 0) {
+      ConfigFound = TRUE;
+      if (CompareMem (Vault.Files.Values[Index]->Hash, Variant->Hash, SHA256_DIGEST_SIZE) != 0) {
+        Print (L"  - the vault was made for a different config.plist\n");
+        ++*Problems;
+      }
+
+      continue;
+    }
+
+    if (OcAsciiStrniCmp (Path, "B00tGeni3\\", 10) == 0) {
+      continue;  // OpenCore never reads the variant folder
+    }
+
+    Found = FALSE;
+    for (Disk = 0; Disk < mDiskCount; ++Disk) {
+      if (AsciiStrCmp (mDiskFiles[Disk].Path, Path) == 0) {
+        Found = TRUE;
+        break;
+      }
+    }
+
+    if (!Found) {
+      PrintDetail (&Shown, L"in the vault, not on disk", Path);
+    } else if (EFI_ERROR (mDiskFiles[Disk].Status)) {
+      PrintDetail (&Shown, L"cannot read", Path);
+    } else if (CompareMem (mDiskFiles[Disk].Hash, Vault.Files.Values[Index]->Hash, SHA256_DIGEST_SIZE) != 0) {
+      PrintDetail (&Shown, L"changed since signing", Path);
+    }
+  }
+
+  if (!ConfigFound) {
+    Print (L"  - config.plist is not in the vault\n");
+    ++*Problems;
+  }
+
+  for (Disk = 0; Disk < mDiskCount; ++Disk) {
+    Found = FALSE;
+    for (Index = 0; Index < Vault.Files.Count; ++Index) {
+      if (AsciiStrCmp (mDiskFiles[Disk].Path, OC_BLOB_GET (Vault.Files.Keys[Index])) == 0) {
+        Found = TRUE;
+        break;
+      }
+    }
+
+    if (!Found) {
+      PrintDetail (&Shown, L"on disk, not in the vault", mDiskFiles[Disk].Path);
+    }
+  }
+
+  if (Shown > B00T_MAX_DETAIL) {
+    Print (L"  - ... and %u more\n", (UINT32)(Shown - B00T_MAX_DETAIL));
+  }
+
+  if (Shown > 0) {
+    Print (L"    files under EFI\\OC changed since the set was signed: re-sign on the Mac\n");
+    *Problems += Shown;
+  }
+
+  Print (L"  vault set: %u entries, %u files on disk compared\n", Vault.Files.Count, (UINT32)mDiskCount);
+  OC_STORAGE_VAULT_DESTRUCT (&Vault, sizeof (Vault));
+  FreePool (Copy);
 }
 
 //
@@ -695,11 +1268,7 @@ PreflightVariant (
     ++Problems;
   }
 
-  Path = OC_BLOB_GET (&Config->Misc.Security.Vault);
-  if (AsciiStrCmp (Path, "Optional") != 0) {
-    Print (L"  - Misc > Security > Vault is %a: needs Optional (vault support is not in this version)\n", Path);
-    ++Problems;
-  }
+  PreflightVault (OcDir, Config, Variant, &Problems);
 
   ToolListed = FALSE;
   for (Index = 0; Index < Config->Misc.Tools.Count; ++Index) {
@@ -772,11 +1341,61 @@ SwapConfig (
 {
   EFI_STATUS  Status;
   CHAR8       ActiveText[B00T_MAX_NAME + 2];
+  UINT8       *OldVault;
+  UINTN       OldVaultSize;
+  UINT8       *OldSig;
+  UINTN       OldSigSize;
+
+  OldVault = NULL;
+  OldSig   = NULL;
 
   Status = WriteViaTemp (B00tDir, B00T_BACKUP_TMP, B00T_BACKUP_NAME, ConfigData, ConfigSize);
   Print (L"Back up config.plist -> B00tGeni3\\%s - %r\n", B00T_BACKUP_NAME, Status);
   if (EFI_ERROR (Status)) {
     return Status;
+  }
+
+  if (Variant->VaultData != NULL) {
+    //
+    // Keep the vault now on disk, as a backup and in memory for a roll-back.
+    //
+    if (!EFI_ERROR (ReadWholeFile (OcDir, B00T_VAULT_NAME, &OldVault, &OldVaultSize))) {
+      Status = WriteViaTemp (B00tDir, B00T_VAULT_BAK_TMP, B00T_VAULT_BAK, OldVault, OldVaultSize);
+      Print (L"Back up vault.plist -> B00tGeni3\\%s - %r\n", B00T_VAULT_BAK, Status);
+      if (EFI_ERROR (Status)) {
+        goto Done;
+      }
+    }
+
+    if (!EFI_ERROR (ReadWholeFile (OcDir, B00T_VSIG_NAME, &OldSig, &OldSigSize))) {
+      Status = WriteViaTemp (B00tDir, B00T_VSIG_BAK_TMP, B00T_VSIG_BAK, OldSig, OldSigSize);
+      Print (L"Back up vault.sig -> B00tGeni3\\%s - %r\n", B00T_VSIG_BAK, Status);
+      if (EFI_ERROR (Status)) {
+        goto Done;
+      }
+    }
+
+    Status = WriteWholeFile (OcDir, B00T_VAULT_TMP, Variant->VaultData, Variant->VaultSize);
+    if (!EFI_ERROR (Status)) {
+      Status = ReadAndCompare (OcDir, B00T_VAULT_TMP, Variant->VaultData, Variant->VaultSize);
+    }
+
+    Print (L"Write the set's vault to OC\\%s - %r\n", B00T_VAULT_TMP, Status);
+    if (EFI_ERROR (Status)) {
+      goto Done;
+    }
+
+    if (Variant->SigData != NULL) {
+      Status = WriteWholeFile (OcDir, B00T_VSIG_TMP, Variant->SigData, Variant->SigSize);
+      if (!EFI_ERROR (Status)) {
+        Status = ReadAndCompare (OcDir, B00T_VSIG_TMP, Variant->SigData, Variant->SigSize);
+      }
+
+      Print (L"Write the set's signature to OC\\%s - %r\n", B00T_VSIG_TMP, Status);
+      if (EFI_ERROR (Status)) {
+        goto Done;
+      }
+    }
   }
 
   Status = WriteWholeFile (OcDir, B00T_CONFIG_TMP, Variant->Data, Variant->Size);
@@ -786,13 +1405,13 @@ SwapConfig (
 
   Print (L"Write %s to OC\\%s - %r\n", Variant->Name, B00T_CONFIG_TMP, Status);
   if (EFI_ERROR (Status)) {
-    return Status;
+    goto Done;
   }
 
   Status = RenameFile (OcDir, B00T_CONFIG_NAME, B00T_CONFIG_OLD);
   Print (L"Rename config.plist -> %s - %r\n", B00T_CONFIG_OLD, Status);
   if (EFI_ERROR (Status)) {
-    return Status;
+    goto Done;
   }
 
   Status = RenameFile (OcDir, B00T_CONFIG_TMP, B00T_CONFIG_NAME);
@@ -806,19 +1425,68 @@ SwapConfig (
     // Put the previous config back so OpenCore still has one to load.
     //
     Print (L"Restoring previous config.plist - %r\n", RenameFile (OcDir, B00T_CONFIG_OLD, B00T_CONFIG_NAME));
-    return Status;
+    goto Done;
+  }
+
+  if (Variant->VaultData != NULL) {
+    //
+    // From here until both renames are done, config.plist and the vault on disk do not match:
+    // a power cut in this window can stop OpenCore before the picker.
+    //
+    Status = RenameFile (OcDir, B00T_VAULT_TMP, B00T_VAULT_NAME);
+    if (!EFI_ERROR (Status)) {
+      Status = ReadAndCompare (OcDir, B00T_VAULT_NAME, Variant->VaultData, Variant->VaultSize);
+    }
+
+    Print (L"Rename %s -> vault.plist and verify - %r\n", B00T_VAULT_TMP, Status);
+    if (!EFI_ERROR (Status) && (Variant->SigData != NULL)) {
+      Status = RenameFile (OcDir, B00T_VSIG_TMP, B00T_VSIG_NAME);
+      if (!EFI_ERROR (Status)) {
+        Status = ReadAndCompare (OcDir, B00T_VSIG_NAME, Variant->SigData, Variant->SigSize);
+      }
+
+      Print (L"Rename %s -> vault.sig and verify - %r\n", B00T_VSIG_TMP, Status);
+    }
+
+    if (EFI_ERROR (Status)) {
+      //
+      // Put the previous three back so they match each other again.
+      //
+      Print (L"Restoring previous config.plist - %r\n", RenameFile (OcDir, B00T_CONFIG_OLD, B00T_CONFIG_NAME));
+      if (OldVault != NULL) {
+        Print (L"Restoring previous vault.plist - %r\n", WriteViaTemp (OcDir, B00T_VAULT_TMP, B00T_VAULT_NAME, OldVault, OldVaultSize));
+      } else {
+        Print (L"Removing the new vault.plist - %r\n", DeleteIfExists (OcDir, B00T_VAULT_NAME));
+      }
+
+      if (OldSig != NULL) {
+        Print (L"Restoring previous vault.sig - %r\n", WriteViaTemp (OcDir, B00T_VSIG_TMP, B00T_VSIG_NAME, OldSig, OldSigSize));
+      }
+
+      goto Done;
+    }
   }
 
   Status = DeleteIfExists (OcDir, B00T_CONFIG_OLD);
   Print (L"Delete %s - %r\n", B00T_CONFIG_OLD, Status);
   if (EFI_ERROR (Status)) {
-    return Status;
+    goto Done;
   }
 
   UnicodeStrToAsciiStrS (Variant->Name, ActiveText, B00T_MAX_NAME);
   AsciiStrCatS (ActiveText, sizeof (ActiveText), "\n");
   Status = WriteViaTemp (B00tDir, B00T_ACTIVE_TMP, B00T_ACTIVE_NAME, (UINT8 *)ActiveText, AsciiStrLen (ActiveText));
   Print (L"Record active name in B00tGeni3\\%s - %r\n", B00T_ACTIVE_NAME, Status);
+
+Done:
+  if (OldVault != NULL) {
+    FreePool (OldVault);
+  }
+
+  if (OldSig != NULL) {
+    FreePool (OldSig);
+  }
+
   return Status;
 }
 

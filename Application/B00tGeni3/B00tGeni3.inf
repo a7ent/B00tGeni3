@@ -35,6 +35,8 @@
   OcAcpiLib
   OcConfigurationLib
   OcCryptoLib
+  OcSerializeLib
+  OcStorageLib
   OcStringLib
   PrintLib
   UefiApplicationEntryPoint
