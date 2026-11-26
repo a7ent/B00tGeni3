@@ -1,8 +1,7 @@
-# B00tGeni3
+# B00tGeni3 ☠
 
-**OpenCore's missing boot switchblade utility.** A UEFI tool you start from the OpenCore picker
-(`EFI\OC\Tools\B00tGeni3.efi`). It swaps in a different `config.plist`, edits boot-args, and runs a few
-recovery tools, then sends you back to the picker or does a cold reset.
+**OpenCore's missing boot configurer utility.**
+The Swiss Army boot configurer that lives right inside your OpenCore picker.
 
 ~~ B00tGeni3 ☠ 2026 ~~ By: oTR-DaRkNeSs x CL4UD3-C0D3 `<cc/>`
 
@@ -11,7 +10,80 @@ recovery tools, then sends you back to the picker or does a cold reset.
 
 ![main screen draft](docs/drafts/draft-A2.png)
 
-## What it does
+## Overview
+
+Met with a kernel panic or a stuck Apple logo after a settings change, an update or an upgrade?
+You know the drill. Dig out a USB installer, boot from it, mount the EFI, fix `config.plist`,
+reboot and pray. Even trying a new kext, a different SMBIOS or verbose mode means booting into
+macOS, editing the plist and hoping it comes back up.
+
+B00tGeni3 cuts all of that out. It's a small UEFI tool that sits in `EFI\OC\Tools` and shows up as
+an entry in the OpenCore picker. Pick it **before** the OS loads and you can:
+- swap your whole config for another one
+- change boot-args
+- reset NVRAM or flip SIP
+- dump what you need for debugging
+
+Then head straight back to the picker. No OS, no mounting, no plist editors.
+
+Keep a stack of configs on the ESP (your daily driver, a debug build, a test build and a
+known-good fallback) and switch between them in seconds. B00tGeni3 checks every one before it lets
+it near your boot, so it won't hand OpenCore a config that leaves you stuck at a black screen.
+
+Built for Hackintosh tinkerers, multi-boot setups and anyone who's ever bricked their own boot at 2 a.m.
+
+## Features
+
+### ☠ CONFIGS: the config switcher
+- Lists every config variant you keep in `EFI\OC\B00tGeni3\` (up to 9), with `known-good.plist` on top.
+- Marks the one that's live right now as **ACTIVE**, and shows a quick overview of its contents.
+- Pick a variant, confirm once, and it's swapped in with a cold reset.
+- **Safe swap:**
+  1. It backs up your current config.
+  2. It writes the new one to a temp file and checks it.
+  3. It renames it into place and checks it again.
+  4. There is always a whole config on disk, never half of one.
+- **RESTORE-FAILSAFE:** one key takes you back to `known-good.plist`.
+
+### ☠ PRE-FLIGHT: the "don't brick me" check
+Before any swap, the variant has to pass all of these:
+- OpenCore's own parser accepts it.
+- The picker still shows (`ShowPicker` on).
+- B00tGeni3 is still in the Tools list, so you can always get back in.
+- Every enabled driver, kext, ACPI table and tool actually exists on disk.
+- The vault check passes, if you use a vault.
+
+Fail any one and it's refused, with every reason listed.
+
+### ☠ BOOT-ARGS: the boot-arg workshop
+- One-key toggles: **VERBOSE** (`-v`), **SAFE BOOT** (`-x`), **SINGLE USER** (`-s`) and
+  **DEBUG** (`debug=0x100`).
+- **ADDITIONAL-ARGS-LIST:** a menu of common documented boot-args, each with a short description.
+- A free edit line for anything else.
+- Three ways to use it:
+  - **COMMIT** saves the line to `config.plist`.
+  - **APPLY & REBOOT** saves it and restarts.
+  - **B00T ONCE** sets the args in NVRAM for the next boot only and leaves your config alone.
+
+### ☠ VAULT SUPPORT: for locked-down setups
+- Works with OpenCore's Vault, the signed-EFI setup.
+- Each variant can carry its own signed vault set, which you sign on your Mac with the included
+  `tools/vault-sign.py` (one key for every variant).
+- B00tGeni3 checks the signature and every file before swapping, swaps all three files together,
+  and rolls back if anything goes wrong.
+- It never signs anything itself, and no private key ever sits on the ESP.
+
+### ☠ B00T-TOOLS: the toolbox
+- **NVRAM-RESET:** clear NVRAM without hunting for the picker hotkey.
+- **SIP:** disable or enable System Integrity Protection.
+- **DUMP-DISKMAP / DUMP-SSDT:** save the disk map and ACPI tables to the ESP for debugging.
+- **UEFI SHELL:** drop to a shell when you need to get your hands dirty.
+
+### ☠ UI DESIGN
+Red OTR logo, with a compact layout for smaller screens. A status bar shows the SIP level, current
+boot-args and active config at a glance.
+
+## How it works
 
 - **CONFIGS**: lists every `*.plist` in `EFI\OC\B00tGeni3\` (up to 9, `known-good.plist` first) and marks the
   one that matches the live `config.plist` as ACTIVE.
@@ -119,16 +191,18 @@ reference. `bench/CHANGES.txt` lists every build with its sha256.
 - `docs/phase8-spec.md`: the UI and feature spec.
 - `docs/drafts/`: the A2 screen design, plus vault UI drafts V1 and V1b. These are not built yet.
 
-## What has been tested (QEMU + OVMF, OpenCore 1.0.8)
+## What has been tested
 
-- Plain swaps: 10/10 on 0.8e, 2/2 again on 0.8g. Each one was checked from the host afterwards (disk
-  check, file hashes, backup, leftover temp files).
-- Bad variants (empty, garbage, cut off, not a config, Vault Secure, missing kext, over 1 MB): all
-  refused, each with its reason.
-- Power cut at 9 points during a swap: `config.plist` was always a whole old or new file, and the next
-  swap cleaned up.
-- Vault: a signed swap round trip worked. The tool refused 4 tampered sets, and OpenCore refused the
-  same sets. COMMIT is refused while a vault is active. See `docs/evidence/phase7a/7b`.
+- Real hardware: multiple systems, plain and vault setups, run by the author.
+- Bench (QEMU + OVMF, OpenCore 1.0.8) results:
+  - Plain swaps: 10/10 on 0.8e, 2/2 again on 0.8g. Each one was checked from the host afterwards (disk
+    check, file hashes, backup, leftover temp files).
+  - Bad variants (empty, garbage, cut off, not a config, Vault Secure, missing kext, over 1 MB): all
+    refused, each with its reason.
+  - Power cut at 9 points during a swap: `config.plist` was always a whole old or new file, and the next
+    swap cleaned up.
+  - Vault: a signed swap round trip worked. The tool refused 4 tampered sets, and OpenCore refused the
+    same sets. COMMIT is refused while a vault is active. See `docs/evidence/phase7a/7b`.
 
 ## Known gaps
 
