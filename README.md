@@ -1,7 +1,7 @@
 # B00tGeni3 ☠
 
 **OpenCore's missing boot switchblade utility.**
-The Swiss Army boot configurer that lives right inside your OpenCore picker.
+A switchblade for your boot: every config, boot-arg and recovery tool, one flick away in your OpenCore picker.
 
 ~~ B00tGeni3 ☠ 2026 ~~ By: oTR-DaRkNeSs x CL4UD3-C0D3 `<cc/>`
 
