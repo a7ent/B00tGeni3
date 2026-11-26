@@ -1,6 +1,6 @@
 # B00tGeni3 ☠
 
-**OpenCore's missing boot configurer utility.**
+**OpenCore's missing boot switchblade utility.**
 The Swiss Army boot configurer that lives right inside your OpenCore picker.
 
 ~~ B00tGeni3 ☠ 2026 ~~ By: oTR-DaRkNeSs x CL4UD3-C0D3 `<cc/>`
