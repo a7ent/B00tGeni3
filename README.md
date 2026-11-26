@@ -8,7 +8,9 @@ The Swiss Army boot configurer that lives right inside your OpenCore picker.
 > Status: **0.8g, tested in QEMU (OVMF + OpenCore 1.0.8) and on multiple real systems, vault included.**
 > Use it on a machine you can recover with a USB installer or a second EFI.
 
-![main screen draft](docs/drafts/draft-A2.png)
+![B00tGeni3 main screen](docs/screenshots/b00tgeni3-main.png)
+
+**Download:** grab `B00tGeni3.efi` from [Releases](https://github.com/a7ent/B00tGeni3/releases/latest).
 
 ## Overview
 
@@ -171,7 +173,8 @@ Built as an OpenCorePkg application (tested with OpenCorePkg 1.0.8, XCODE5 toolc
 
 ## Install
 
-1. Copy `B00tGeni3.efi` to `EFI\OC\Tools\`.
+1. Download `B00tGeni3.efi` from [Releases](https://github.com/a7ent/B00tGeni3/releases/latest) (or build it,
+   see above) and copy it to `EFI\OC\Tools\`.
 2. Add a Misc > Tools entry for it (Path `B00tGeni3.efi`, Enabled, `Auxiliary` as you like) to every
    config you will swap between.
 3. Put the variants in `EFI\OC\B00tGeni3\`, with `known-good.plist` being one you know boots.
