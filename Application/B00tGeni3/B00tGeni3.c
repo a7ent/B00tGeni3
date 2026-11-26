@@ -2086,7 +2086,7 @@ STATIC CONST B00T_UI_SEL  mUiSel[B00T_SEL_COUNT] = {
   { 28,   9, L"boot-arg=",                    L"ENTER to type in the boot-arg line"                                                },
   { 28,  88, L"::COMMIT",                     L"Save the boot-arg line into config.plist, no reset; OpenCore uses it from the next boot" },
   { 30,  16, L"[ APPLY & REBOOT ]",           L"Save the boot-arg line into config.plist, then cold reset"                         },
-  { 30,  44, L"[ B00T ONCE ]",                L"UNTESTED: set NVRAM boot-args for this boot only and go back to the picker"        },
+  { 30,  44, L"[ B00T ONCE ]",                L"Set NVRAM boot-args for this boot only and go back to the picker"                  },
   { 30,  78, L"[DISCARD CHANGES AND EXIT]",   L"Return to the OpenCore picker, nothing changed"                                    },
   { 35,   5, L"",                             L"ENTER runs the pre-flight on this config, you confirm once, it is swapped in, then cold reset" },
   { 41,   7, L"RESTORE-FAILSAFE",             L"Swap known-good.plist into config.plist, then cold reset"                          },
@@ -2847,7 +2847,6 @@ STATIC CONST B00T_UI_LABEL  mUiLabels[] = {
   {  2, 46, EFI_LIGHTGRAY, L"B00t ARGS:"                                                                           },
   {  2, 86, EFI_LIGHTGRAY, L"ACTIVE:"                                                                              },
   { 27,  9, EFI_LIGHTGRAY, L"CURRENT CONFIG BOOT-ARGs:"                                                            },
-  { 30, 58, EFI_LIGHTRED,  L"untested"                                                                             },
   { 33,  7, EFI_LIGHTGRAY, L"VARIANT                    STATE      CHECK"                                          },
   { 39, 64, EFI_LIGHTGRAY, L"Compared with the active config"                                                      },
   { 46,  9, EFI_LIGHTRED,  L"wipes boot list"                                                                      },
@@ -3629,7 +3628,7 @@ UiSaveArgs (
 
 /**
   B00T ONCE: set NVRAM boot-args to the edited line and go back to the picker without a
-  reset. config.plist is not touched. Not yet confirmed with a real macOS boot.
+  reset. config.plist is not touched.
 **/
 STATIC
 B00T_UI_RESULT
@@ -3641,7 +3640,6 @@ UiBootOnce (
   CHAR8       Args[B00T_MAX_ARGS];
 
   UiPageBegin (L"B00T ONCE");
-  UiPrintWarning (L"UNTESTED: not yet confirmed with a real macOS boot.\n");
   Print (L"Sets NVRAM boot-args to:\n  %s\n", Context->EditArgs);
   Print (L"and goes back to the OpenCore picker without a reset. config.plist is not changed.\n\n");
   Print (L"Set it?\n");

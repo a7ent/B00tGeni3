@@ -6,7 +6,7 @@ recovery tools, then sends you back to the picker or does a cold reset.
 
 ~~ B00tGeni3 ☠ 2026 ~~ By: oTR-DaRkNeSs x CL4UD3-C0D3 `<cc/>`
 
-> Status: **0.8g, tested in QEMU (OVMF + OpenCore 1.0.8) only.** Not yet run on real hardware.
+> Status: **0.8g, tested in QEMU (OVMF + OpenCore 1.0.8) and on multiple real systems, vault included.**
 > Use it on a machine you can recover with a USB installer or a second EFI.
 
 ![main screen draft](docs/drafts/draft-A2.png)
@@ -34,8 +34,8 @@ recovery tools, then sends you back to the picker or does a cold reset.
   and a free edit line.
   - **COMMIT** saves the line to `config.plist`.
   - **APPLY & REBOOT** saves it and cold resets.
-  - **B00T ONCE** only sets NVRAM `boot-args` and goes back to the picker. It is *untested with a real macOS
-    boot*. Whether it really lasts one boot depends on your config's NVRAM > Delete.
+  - **B00T ONCE** only sets NVRAM `boot-args` and goes back to the picker. Whether it really lasts
+    one boot depends on your config's NVRAM > Delete.
 - **B00T-TOOLS**: NVRAM reset, SIP toggle, disk map dump, SSDT dump, UEFI Shell.
 
 ## Vault (0.8g)
@@ -132,12 +132,9 @@ reference. `bench/CHANGES.txt` lists every build with its sha256.
 
 ## Known gaps
 
-- Nothing has run on real hardware yet. Firmware FAT drivers differ from OVMF's.
-- B00T ONCE has not been tried with a real macOS boot.
 - A power cut mid-swap can leave FAT damage or temp files. The next swap clears the temp files; use
   Disk Utility First Aid for the FAT damage. With a vault, a cut during the final renames can stop
-  OpenCore before the picker. This was accepted as a risk and not demonstrated.
-- APPLY & REBOOT under a vault is refused by the same code as COMMIT, but wasn't run on its own.
+  OpenCore before the picker.
 
 ## Issues
 
